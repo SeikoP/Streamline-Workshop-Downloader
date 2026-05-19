@@ -2918,6 +2918,9 @@ async function getBrowseQueueTarget() {
   if (isQueueableWorkshopUrl(currentUrl)) {
     return unwrapTranslateUrl(currentUrl);
   }
+  if (currentUrl) {
+    return "";
+  }
   const inputTarget = normalizeBrowseOpenUrl(browseUrlInput?.value || "");
   if (isQueueableWorkshopUrl(inputTarget)) {
     return unwrapTranslateUrl(inputTarget);
@@ -2945,7 +2948,7 @@ async function updateBrowseAddLockState() {
   }
   const inputUrl = normalizeBrowseOpenUrl(browseUrlInput?.value || "");
   const currentTarget = isQueueableWorkshopUrl(currentUrl) ? unwrapTranslateUrl(currentUrl) : "";
-  const inputTarget = isQueueableWorkshopUrl(inputUrl) ? unwrapTranslateUrl(inputUrl) : "";
+  const inputTarget = !currentUrl && isQueueableWorkshopUrl(inputUrl) ? unwrapTranslateUrl(inputUrl) : "";
   const target = currentTarget || inputTarget;
   if (target) {
     setBrowseAddLockState({ locked: false, target });
@@ -7563,6 +7566,7 @@ function wireBrowseTab() {
   browseWebview?.addEventListener("did-start-loading", () => {
     syncBrowseWebviewSize();
     setBrowseStatus("Loading Workshop page...");
+    setBrowseAddLockState({ locked: true, reason: "Add is locked while the Workshop page is loading." });
     browseOpenBtn?.setAttribute("disabled", "disabled");
   });
 
@@ -7616,6 +7620,7 @@ function wireBrowseTab() {
     if (type === "loading") {
       browseHasOpenedTarget = true;
       setBrowseStatus(url ? `Loading ${url}` : "Loading Workshop page...");
+      setBrowseAddLockState({ locked: true, reason: "Add is locked while the Workshop page is loading." });
       browseOpenBtn?.setAttribute("disabled", "disabled");
       return;
     }
