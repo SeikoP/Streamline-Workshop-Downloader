@@ -978,10 +978,10 @@ button.control:not(:disabled):active,
   position: fixed;
   max-height: 166px;
   overflow: auto;
-  border: 1px solid var(--menu-border);
+  border: 1px solid color-mix(in srgb, var(--menu-border) 88%, var(--fg) 12%);
   border-radius: 3px;
-  background: var(--input-bg);
-  box-shadow: var(--elev-floating);
+  background: var(--menu-popup-bg);
+  box-shadow: 0 0 0 1px var(--window-bg), 0 12px 28px rgba(0, 0, 0, 0.48);
   z-index: 5000;
 }
 
@@ -993,9 +993,9 @@ button.control:not(:disabled):active,
   width: 100%;
   height: 24px;
   border: 0;
-  border-bottom: 1px solid var(--menu-border);
-  background: transparent;
-  color: var(--fg);
+  border-bottom: 1px solid color-mix(in srgb, var(--menu-border) 82%, var(--window-bg) 18%);
+  background: var(--menu-popup-bg);
+  color: var(--menu-text-hover);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -1014,8 +1014,8 @@ button.control:not(:disabled):active,
 
 .game-search-item:hover,
 .game-search-item:focus-visible {
-  background: var(--control-hover);
-  color: var(--fg-hover);
+  background: var(--menu-hover);
+  color: var(--menu-item-hover-text);
   outline: none;
 }
 
@@ -1030,7 +1030,7 @@ button.control:not(:disabled):active,
   min-width: 54px;
   padding: 2px 5px;
   border-radius: 2px;
-  background: color-mix(in srgb, var(--control-bg) 76%, transparent);
+  background: color-mix(in srgb, var(--control-bg) 92%, var(--window-bg) 8%);
   color: var(--menu-text);
   font-variant-numeric: tabular-nums;
   text-align: right;
@@ -1039,6 +1039,7 @@ button.control:not(:disabled):active,
 .game-search-empty {
   min-height: 24px;
   padding: 6px 8px;
+  background: var(--menu-popup-bg);
   color: var(--menu-text);
   font-size: 11px;
   line-height: 1.25;
