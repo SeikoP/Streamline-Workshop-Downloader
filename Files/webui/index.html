@@ -23,6 +23,12 @@
         </div>
       </div>
       <div class="titlebar-drag pywebview-drag-region"></div>
+      <nav class="titlebar-tabs" aria-label="App sections">
+        <button class="titlebar-tab" type="button" data-app-tab="browse">Browse</button>
+        <button class="titlebar-tab active" type="button" data-app-tab="queue">Queue</button>
+        <button class="titlebar-tab" type="button" data-app-tab="update">Update</button>
+      </nav>
+      <div class="titlebar-drag pywebview-drag-region"></div>
       <div class="titlebar-right-controls">
         <div class="titlebar-account-shell">
           <div class="account-select-wrap select-chevron-wrap">
@@ -45,87 +51,175 @@
     </header>
 
     <div class="content">
-      <form id="queue-form" class="input-row input-row-zoned">
-        <div class="input-row-zone input-row-zone-center">
+      <section class="app-tab-panel browse-panel hidden" data-app-panel="browse">
+        <form id="browse-form" class="input-row input-row-zoned browse-toolbar">
+          <div class="input-row-zone input-row-zone-center">
+            <div class="line-input-wrap">
+              <button class="line-icon-btn" id="browse-home-btn" type="button" title="Open Steam Workshop">
+                <img src="../info.svg" alt="Workshop">
+              </button>
+              <input class="control line-input" id="browse-url" name="browse-url" type="text" placeholder="Enter Workshop URL or AppID">
+            </div>
+          </div>
+          <div class="input-row-zone input-row-zone-right">
+            <button class="control action-btn" id="browse-open-btn" type="submit">Open</button>
+            <button class="control action-btn" id="browse-translate-btn" type="button">Translate</button>
+            <button class="control action-btn" id="browse-add-btn" type="button">Add</button>
+          </div>
+        </form>
+        <div class="browse-status-line">
+          <div class="browse-status-row" id="browse-status">Ready</div>
+          <div class="browse-nav-controls">
+            <button class="control browse-nav-btn" id="browse-back-btn" type="button" title="Back">&lt;</button>
+            <button class="control browse-nav-btn" id="browse-forward-btn" type="button" title="Forward">&gt;</button>
+          </div>
+        </div>
+        <div class="browse-translate-overlay hidden" id="browse-translate-overlay">
+          <label class="browse-translate-label" for="browse-translate-language">Translate page to</label>
+          <select class="control browse-translate-select" id="browse-translate-language">
+            <option value="vi" selected>Vietnamese</option>
+            <option value="en">English</option>
+            <option value="zh-CN">Chinese Simplified</option>
+            <option value="ja">Japanese</option>
+            <option value="ko">Korean</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+          </select>
+          <button class="control browse-translate-action" id="browse-translate-apply-btn" type="button">Apply</button>
+          <button class="control browse-translate-action" id="browse-translate-cancel-btn" type="button">Cancel</button>
+        </div>
+        <section class="browse-webview-wrap">
+          <div id="browse-webview" class="browse-native-host">
+            <span>Workshop browser is available in the Electron app.</span>
+          </div>
+        </section>
+      </section>
+
+      <section class="app-tab-panel active" data-app-panel="queue">
+        <form id="queue-form" class="input-row input-row-zoned">
+          <div class="input-row-zone input-row-zone-center">
+            <div class="line-input-wrap">
+              <button class="line-icon-btn" id="url-help-btn" type="button" title="Workshop Input Help">
+                <img src="../info.svg" alt="Info">
+              </button>
+              <input class="control line-input" id="item-url" name="item-url" type="text" placeholder="Enter Game, Mod, Collection URL or ID" required>
+            </div>
+          </div>
+          <div class="input-row-zone input-row-zone-right">
+            <button class="control action-btn" id="download-now-btn" type="button">Download</button>
+            <button class="control action-btn" id="add-to-queue-btn" type="submit">Add to Queue</button>
+          </div>
+        </form>
+
+        <section id="search-row" class="search-row">
           <div class="line-input-wrap">
-            <button class="line-icon-btn" id="url-help-btn" type="button" title="Workshop Input Help">
-              <img src="../info.svg" alt="Info">
+            <button class="line-icon-btn" id="filter-btn" type="button" title="Filter Queue Status">
+              <img src="../filter-queue-status.svg" alt="Filter">
             </button>
-            <input class="control line-input" id="item-url" name="item-url" type="text" placeholder="Enter Game, Mod, Collection URL or ID" required>
+            <input class="control line-input" id="search-input" type="text" placeholder="Mods in Queue: 0     /     Search by Mod ID or Name">
+            <button class="tiny-icon-btn" id="case-btn" type="button" title="Case sensitivity">
+              <img id="case-icon" src="../case-sensitive.svg" alt="Case">
+            </button>
+            <button class="tiny-icon-btn" id="regex-btn" type="button" title="Regex">
+              <img id="regex-icon" src="../regex.svg" alt="Regex">
+            </button>
+            <div class="filter-popup hidden" id="filter-popup">
+              <button class="filter-item active" data-filter="All">All Mods</button>
+              <button class="filter-item" data-filter="Queued">Mods Queued</button>
+              <button class="filter-item" data-filter="Downloaded">Downloaded</button>
+              <button class="filter-item" data-filter="Failed">Failed</button>
+            </div>
           </div>
-        </div>
-        <div class="input-row-zone input-row-zone-right">
-          <button class="control action-btn" id="download-now-btn" type="button">Download</button>
-          <button class="control action-btn" id="add-to-queue-btn" type="submit">Add to Queue</button>
-        </div>
-      </form>
+          <div id="import-export-spacer" class="import-export-spacer"></div>
+          <div id="import-export-wrap" class="import-export-wrap">
+            <button class="icon-btn" id="import-btn" type="button" title="Import Queue"><img src="../import.svg" alt="Import"></button>
+            <button class="icon-btn" id="export-btn" type="button" title="Export Queue"><img src="../export.svg" alt="Export"></button>
+          </div>
+        </section>
 
-      <section id="search-row" class="search-row">
-        <div class="line-input-wrap">
-          <button class="line-icon-btn" id="filter-btn" type="button" title="Filter Queue Status">
-            <img src="../filter-queue-status.svg" alt="Filter">
+        <section class="queue-list-section mod-list-section is-hidden" id="mod-list-section">
+          <button class="queue-list-toggle" id="mod-list-toggle" type="button" aria-expanded="true">
+            <span class="queue-list-title">Mod List</span>
+            <span class="queue-list-summary" id="mod-list-summary">Search an AppID to show workshop mods</span>
           </button>
-          <input class="control line-input" id="search-input" type="text" placeholder="Mods in Queue: 0     /     Search by Mod ID or Name">
-          <button class="tiny-icon-btn" id="case-btn" type="button" title="Case sensitivity">
-            <img id="case-icon" src="../case-sensitive.svg" alt="Case">
-          </button>
-          <button class="tiny-icon-btn" id="regex-btn" type="button" title="Regex">
-            <img id="regex-icon" src="../regex.svg" alt="Regex">
-          </button>
-          <div class="filter-popup hidden" id="filter-popup">
-            <button class="filter-item active" data-filter="All">All Mods</button>
-            <button class="filter-item" data-filter="Queued">Mods Queued</button>
-            <button class="filter-item" data-filter="Downloaded">Downloaded</button>
-            <button class="filter-item" data-filter="Failed">Failed</button>
+          <div class="queue-list-body">
+            <section class="queue-table-wrap mod-list-table-wrap">
+              <table id="mod-list-table">
+                <thead>
+                  <tr>
+                    <th>Game</th>
+                    <th>Mod ID</th>
+                    <th>Mod Name</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="mod-list-body">
+                  <tr>
+                    <td colspan="4" class="empty-cell">Search by AppID or game Workshop link to list mods.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </section>
           </div>
-        </div>
-        <div id="import-export-spacer" class="import-export-spacer"></div>
-        <div id="import-export-wrap" class="import-export-wrap">
-          <button class="icon-btn" id="import-btn" type="button" title="Import Queue"><img src="../import.svg" alt="Import"></button>
-          <button class="icon-btn" id="export-btn" type="button" title="Export Queue"><img src="../export.svg" alt="Export"></button>
-        </div>
+        </section>
+
+        <section class="queue-list-section expanded" id="queue-list-section">
+          <button class="queue-list-toggle" id="queue-list-toggle" type="button" aria-expanded="true">
+            <span class="queue-list-title">Queue</span>
+            <span class="queue-list-summary" id="queue-list-summary">Game / Mod ID / Mod Name / Status / Provider</span>
+          </button>
+          <div class="queue-list-body">
+            <section class="queue-table-wrap" id="queue-table-wrap">
+              <table id="queue-table">
+                <thead>
+                  <tr id="queue-head-row">
+                    <th>Game</th>
+                    <th>Mod ID</th>
+                    <th>Mod Name</th>
+                    <th>Status</th>
+                    <th>Provider</th>
+                  </tr>
+                </thead>
+                <tbody id="queue-body"></tbody>
+              </table>
+            </section>
+          </div>
+        </section>
+
+        <section class="footer-row">
+          <button class="control footer-btn" id="open-downloads-btn" type="button">Open Downloads Folder</button>
+          <button class="control footer-btn start-btn" id="start-download-btn" type="button">Start Download</button>
+          <div id="provider-wrap" class="provider-wrap">
+            <div class="provider-select-wrap select-chevron-wrap">
+              <span class="provider-display" aria-hidden="true">
+                <span class="provider-display-prefix">Provider:</span>
+                <span class="provider-display-name" id="provider-display-name">Default</span>
+              </span>
+              <select class="control provider-select" id="provider" name="provider" aria-label="Provider">
+                <option value="Default">Default</option>
+                <option value="SteamCMD">SteamCMD</option>
+                <option value="SteamWebAPI">SteamWebAPI</option>
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <section id="log-wrap" class="log-wrap">
+          <div class="log-area">
+            <button id="log-copy-btn" class="log-tool-btn hidden-log-tool" type="button" title="Copy visible logs">Copy</button>
+            <button id="log-clear-btn" class="log-tool-btn danger hidden-log-tool" type="button" title="Clear logs">Clear</button>
+            <div class="log-feed" id="event-log" role="log" aria-live="polite"></div>
+          </div>
+        </section>
       </section>
 
-      <section class="queue-table-wrap">
-        <table id="queue-table">
-          <thead>
-            <tr id="queue-head-row">
-              <th>Game</th>
-              <th>Mod ID</th>
-              <th>Mod Name</th>
-              <th>Status</th>
-              <th>Provider</th>
-            </tr>
-          </thead>
-          <tbody id="queue-body"></tbody>
-        </table>
-      </section>
-
-      <section class="footer-row">
-        <button class="control footer-btn" id="open-downloads-btn" type="button">Open Downloads Folder</button>
-        <button class="control footer-btn start-btn" id="start-download-btn" type="button">Start Download</button>
-        <div id="provider-wrap" class="provider-wrap">
-          <div class="provider-select-wrap select-chevron-wrap">
-            <span class="provider-display" aria-hidden="true">
-              <span class="provider-display-prefix">Provider:</span>
-              <span class="provider-display-name" id="provider-display-name">Default</span>
-            </span>
-            <select class="control provider-select" id="provider" name="provider" aria-label="Provider">
-              <option value="Default">Default</option>
-              <option value="SteamCMD">SteamCMD</option>
-              <option value="SteamWebAPI">SteamWebAPI</option>
-            </select>
+      <section class="app-tab-panel placeholder-panel hidden" data-app-panel="update">
+        <div class="placeholder-card">
+          <div>
+            <h2>Update</h2>
+            <p>Mod update management will be added here.</p>
           </div>
-        </div>
-      </section>
-
-      <section id="log-wrap" class="log-wrap">
-        <div class="log-area">
-          <div class="log-overlay-toolbar">
-            <button id="log-copy-btn" class="log-tool-btn" type="button" title="Copy visible logs">Copy</button>
-            <button id="log-clear-btn" class="log-tool-btn danger" type="button" title="Clear logs">Clear</button>
-          </div>
-          <div class="log-feed" id="event-log" role="log" aria-live="polite"></div>
+          <button class="control action-btn" type="button" disabled>Coming Soon</button>
         </div>
       </section>
     </div>

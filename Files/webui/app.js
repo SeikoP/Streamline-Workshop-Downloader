@@ -24,6 +24,20 @@ const inputRowActions = document.querySelector(".input-row-zone-right");
 const importExportWrap = document.getElementById("import-export-wrap");
 const importExportSpacer = document.getElementById("import-export-spacer");
 const itemUrlInput = document.getElementById("item-url");
+const browseForm = document.getElementById("browse-form");
+const browseUrlInput = document.getElementById("browse-url");
+const browseHomeBtn = document.getElementById("browse-home-btn");
+const browseOpenBtn = document.getElementById("browse-open-btn");
+const browseBackBtn = document.getElementById("browse-back-btn");
+const browseForwardBtn = document.getElementById("browse-forward-btn");
+const browseTranslateBtn = document.getElementById("browse-translate-btn");
+const browseAddBtn = document.getElementById("browse-add-btn");
+const browseWebview = document.getElementById("browse-webview");
+const browseStatus = document.getElementById("browse-status");
+const browseTranslateOverlay = document.getElementById("browse-translate-overlay");
+const browseTranslateLanguage = document.getElementById("browse-translate-language");
+const browseTranslateApplyBtn = document.getElementById("browse-translate-apply-btn");
+const browseTranslateCancelBtn = document.getElementById("browse-translate-cancel-btn");
 const settingsBtn = document.getElementById("settings-btn");
 const settingsCommandShell = document.getElementById("settings-command-shell");
 const accountsBtn = document.getElementById("accounts-btn");
@@ -45,7 +59,14 @@ const commandPaletteInput = document.getElementById("command-palette-input");
 const commandPaletteList = document.getElementById("command-palette-list");
 const queueTable = document.getElementById("queue-table");
 const queueHeadRow = document.getElementById("queue-head-row");
-const queueTableWrap = document.querySelector(".queue-table-wrap");
+const queueTableWrap = document.getElementById("queue-table-wrap") || queueTable?.closest(".queue-table-wrap");
+const modListSection = document.getElementById("mod-list-section");
+const modListToggle = document.getElementById("mod-list-toggle");
+const modListSummary = document.getElementById("mod-list-summary");
+const modListBody = document.getElementById("mod-list-body");
+const queueListSection = document.getElementById("queue-list-section");
+const queueListToggle = document.getElementById("queue-list-toggle");
+const queueListSummary = document.getElementById("queue-list-summary");
 const modalOverlay = document.getElementById("modal-overlay");
 const modalTitle = document.getElementById("modal-title");
 const modalMessage = document.getElementById("modal-message");
@@ -54,6 +75,8 @@ const modalInput = document.getElementById("modal-input");
 const modalCancelBtn = document.getElementById("modal-cancel-btn");
 const modalOkBtn = document.getElementById("modal-ok-btn");
 const titlebarLogo = document.getElementById("titlebar-logo");
+const appTabButtons = Array.from(document.querySelectorAll(".titlebar-tab"));
+const appTabPanels = Array.from(document.querySelectorAll("[data-app-panel]"));
 const windowResizeEast = document.getElementById("window-resize-east");
 const windowResizeSouth = document.getElementById("window-resize-south");
 
@@ -76,6 +99,7 @@ let commandPaletteResults = [];
 let commandPaletteSelectedIndex = 0;
 let commandPaletteLastFocusedElement = null;
 let commandPaletteSectionFilter = "all";
+let modListResults = [];
 let commandPaletteAvailableSections = [];
 let commandPaletteVisibleFilters = [];
 let commandPaletteAllTypeFilters = [];
@@ -86,6 +110,12 @@ let logTopItems = [];
 let logGroupsByOperation = new Map();
 let logRenderQueued = false;
 let logRenderPreserveScroll = false;
+let appTabAnimationToken = 0;
+let browseWorkshopScopeAppId = "";
+let browseAddTarget = "";
+let browseAddLockReason = "Open a Workshop mod or collection page before adding.";
+let browseAddLockUpdateToken = 0;
+let browseHasOpenedTarget = false;
 const SEARCH_RENDER_DEBOUNCE_MS = 180;
 const DOUBLE_SHIFT_WINDOW_MS = 360;
 const EVENT_POLL_INTERVAL_MS = 250;
@@ -107,6 +137,7 @@ const COMMAND_PALETTE_SECTION_LABELS = {
   help: "Help"
 };
 const COMMAND_PALETTE_SECTION_ORDER = ["all", "controls", "appearance", "tools", "help"];
+const STEAM_WORKSHOP_HOME_URL = "https://steamcommunity.com/workshop/browse/";
 
 let virtualRowHeight = VIRTUAL_ROW_HEIGHT_FALLBACK;
 let virtualItems = [];
@@ -133,6 +164,7 @@ const state = {
   caseSensitive: false,
   config: {},
   version: "",
+  activeAppTab: "queue",
   selectedModIds: new Set(),
   isDownloading: false,
   cancelPending: false,
@@ -222,6 +254,54 @@ function setProviderValue(value) {
     providerSelect.value = value;
   }
   syncProviderDisplay();
+}
+
+function setActiveAppTab(tabName) {
+  const nextTab = String(tabName || "queue");
+  const previousTab = state.activeAppTab || "queue";
+  if (nextTab === previousTab) {
+    return;
+  }
+  const token = ++appTabAnimationToken;
+  state.activeAppTab = nextTab;
+  appTabButtons.forEach((button) => {
+    const isActive = button.dataset.appTab === nextTab;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
+  appTabPanels.forEach((panel) => {
+    panel.getAnimations?.().forEach((animation) => animation.cancel());
+    const isActive = panel.dataset.appPanel === nextTab;
+    panel.classList.remove("entering", "leaving");
+    panel.classList.toggle("active", isActive);
+    panel.classList.toggle("hidden", !isActive);
+    panel.style.zIndex = "";
+  });
+
+  if (nextTab === "queue") {
+    renderQueueViewport(true);
+    scheduleLogTimelineRender({ preserveScroll: true });
+  }
+  if (token === appTabAnimationToken && nextTab === "browse") {
+    showBrowseNativeBrowser();
+  } else {
+    hideBrowseNativeBrowser();
+  }
+}
+
+function wireAppTabs() {
+  state.activeAppTab = "queue";
+  appTabButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      setActiveAppTab(button.dataset.appTab || "queue");
+    });
+  });
+  appTabPanels.forEach((panel) => {
+    const isActive = panel.dataset.appPanel === state.activeAppTab;
+    panel.classList.toggle("active", isActive);
+    panel.classList.toggle("hidden", !isActive);
+  });
+  hideBrowseNativeBrowser();
 }
 
 function normalizeLogTone(value) {
@@ -348,6 +428,120 @@ function buildLogClipboardText() {
     lines.push(parts.join(" "));
   }
   return lines.join("\n");
+}
+
+function buildLogRowClipboardText(row) {
+  if (!(row instanceof HTMLElement)) {
+    return "";
+  }
+  const time = row.querySelector(".log-time")?.textContent?.trim() || "";
+  const tone = row.querySelector(".log-tone")?.textContent?.trim() || "";
+  const message = row.querySelector(".log-message")?.textContent?.trim() || "";
+  const source = row.querySelector(".log-source")?.textContent?.trim() || "";
+  const parts = [];
+  if (time) {
+    parts.push(`[${time}]`);
+  }
+  if (tone) {
+    parts.push(`[${tone}]`);
+  }
+  if (message) {
+    parts.push(message);
+  }
+  if (source) {
+    parts.push(`(${source})`);
+  }
+  return parts.join(" ");
+}
+
+function removeLogEntryById(entryId) {
+  const id = String(entryId || "");
+  if (!id) {
+    return;
+  }
+  state.logEntries = state.logEntries.filter((entry) => String(entry.id) !== id);
+  logTopItems = logTopItems.filter((item) => {
+    if (item?.kind !== "single") {
+      return true;
+    }
+    return String(item.entry?.id) !== id;
+  });
+  for (const [operationId, group] of logGroupsByOperation.entries()) {
+    group.entries = group.entries.filter((entry) => String(entry.id) !== id);
+    if (!group.entries.length) {
+      logGroupsByOperation.delete(operationId);
+      logTopItems = logTopItems.filter((item) => item?.kind !== "group" || item.operationId !== operationId);
+      continue;
+    }
+    recomputeLogGroupState(group);
+  }
+  scheduleLogTimelineRender({ preserveScroll: true });
+}
+
+function recomputeLogGroupState(group) {
+  if (!group || !Array.isArray(group.entries) || !group.entries.length) {
+    return;
+  }
+  let nextState = "run";
+  for (const entry of group.entries) {
+    nextState = deriveOperationState(nextState, entry);
+  }
+  const last = group.entries[group.entries.length - 1];
+  group.state = nextState;
+  group.lastMessage = String(last?.message || "");
+  group.updatedAt = Number(last?.timestampMs || Date.now());
+  if (group.progressEntryId && !group.entries.some((entry) => String(entry.id) === String(group.progressEntryId))) {
+    group.progressEntryId = "";
+  }
+}
+
+function removeLogGroupById(operationId) {
+  const opId = String(operationId || "").trim();
+  if (!opId) {
+    return;
+  }
+  logGroupsByOperation.delete(opId);
+  state.logEntries = state.logEntries.filter((entry) => String(entry.operationId || "") !== opId);
+  logTopItems = logTopItems.filter((item) => item?.kind !== "group" || item.operationId !== opId);
+  scheduleLogTimelineRender({ preserveScroll: true });
+}
+
+function attachLogLineActions(line, { entry = null, group = null } = {}) {
+  const actions = document.createElement("span");
+  actions.className = "log-line-actions";
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "log-line-tool";
+  copyBtn.textContent = "Copy";
+  copyBtn.title = "Copy this log";
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.className = "log-line-tool danger";
+  clearBtn.textContent = "Clear";
+  clearBtn.title = group ? "Clear this log group" : "Clear this log";
+
+  copyBtn.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    const ok = await copyTextToClipboard(buildLogRowClipboardText(line));
+    copyBtn.textContent = ok ? "Copied" : "Failed";
+    window.setTimeout(() => {
+      if (copyBtn.isConnected) {
+        copyBtn.textContent = "Copy";
+      }
+    }, 900);
+  });
+
+  clearBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (group) {
+      removeLogGroupById(group.operationId);
+      return;
+    }
+    removeLogEntryById(entry?.id);
+  });
+
+  actions.append(copyBtn, clearBtn);
+  line.appendChild(actions);
 }
 
 function showFullLogMessageDialog(entry) {
@@ -652,6 +846,7 @@ function createLogEntryLineElement(entry, extraClass = "", keyPrefix = "s") {
   source.textContent = entry.source || "ui";
 
   line.append(time, tone, message, source);
+  attachLogLineActions(line, { entry });
   return line;
 }
 
@@ -695,6 +890,7 @@ function createLogGroupLineElement(group, view = null) {
   }
 
   line.append(toggle, time, tone, message, source);
+  attachLogLineActions(line, { group });
   return line;
 }
 
@@ -2549,6 +2745,580 @@ function parseModId(inputUrl) {
   return "N/A";
 }
 
+function extractWorkshopAppId(value) {
+  const input = unwrapTranslateUrl(String(value || "").trim());
+  const patterns = [
+    /steamcommunity\.com\/app\/(\d+)/i,
+    /store\.steampowered\.com\/app\/(\d+)/i,
+    /[?&]appid=(\d+)/i
+  ];
+  for (const pattern of patterns) {
+    const match = input.match(pattern);
+    if (match) {
+      return match[1];
+    }
+  }
+  return "";
+}
+
+function extractWorkshopModId(value) {
+  const input = unwrapTranslateUrl(String(value || "").trim());
+  if (!input) {
+    return "";
+  }
+  const match = input.match(/[?&]id=(\d+)/i);
+  return match ? match[1] : "";
+}
+
+function isSpecificWorkshopTarget(value) {
+  const input = unwrapTranslateUrl(String(value || "").trim());
+  if (!input) {
+    return false;
+  }
+  if (/^\d{8,}$/.test(input)) {
+    return true;
+  }
+  if (/steamcommunity\.com\/(sharedfiles|workshop)\/filedetails\/\?/i.test(input)) {
+    return !!extractWorkshopModId(input);
+  }
+  return false;
+}
+
+function getWorkshopAppIdSearchTarget(value) {
+  const input = unwrapTranslateUrl(String(value || "").trim());
+  if (!input) {
+    return "";
+  }
+  const appId = extractWorkshopAppId(input);
+  if (appId) {
+    return appId;
+  }
+  if (/^\d{1,7}$/.test(input)) {
+    return input;
+  }
+  return "";
+}
+
+function setBrowseWorkshopScope(appId) {
+  browseWorkshopScopeAppId = /^\d+$/.test(String(appId || "")) ? String(appId) : "";
+  window.streamlineElectron?.browse?.setScope?.(browseWorkshopScopeAppId).catch(() => null);
+  if (!browseWorkshopScopeAppId) {
+    window.streamlineElectron?.browse?.setAllowedMods?.([]).catch(() => null);
+  }
+  if (browseWorkshopScopeAppId) {
+    setBrowseStatus(`Workshop scope: AppID ${browseWorkshopScopeAppId}`, "good");
+  }
+}
+
+function setBrowseAllowedMods(mods) {
+  const modIds = (mods || [])
+    .map((mod) => String(mod?.mod_id || mod || "").trim())
+    .filter((id) => /^\d+$/.test(id));
+  window.streamlineElectron?.browse?.setAllowedMods?.(modIds).catch(() => null);
+}
+
+function getScopedWorkshopSearchUrl(query) {
+  const searchText = encodeURIComponent(String(query || "").trim());
+  if (browseWorkshopScopeAppId) {
+    return `https://steamcommunity.com/workshop/browse/?appid=${browseWorkshopScopeAppId}&searchtext=${searchText}`;
+  }
+  return `https://steamcommunity.com/workshop/browse/?searchtext=${searchText}`;
+}
+
+function getWorkshopModUrl(modId) {
+  const id = String(modId || "").trim();
+  return id ? `https://steamcommunity.com/sharedfiles/filedetails/?id=${encodeURIComponent(id)}` : "";
+}
+
+function normalizeBrowseOpenTarget(value) {
+  const input = String(value || "").trim();
+  if (!input) {
+    return { url: "", appId: "", empty: true };
+  }
+  const appId = extractWorkshopAppId(input);
+  if (/^https?:\/\//i.test(input)) {
+    return { url: input, appId };
+  }
+  if (/^steamcommunity\.com\//i.test(input)) {
+    return { url: `https://${input}`, appId };
+  }
+  if (/^\d+$/.test(input)) {
+    return { url: `https://steamcommunity.com/app/${input}/workshop/`, appId: input };
+  }
+  return { url: getScopedWorkshopSearchUrl(input), appId: browseWorkshopScopeAppId };
+}
+
+function normalizeBrowseOpenUrl(value) {
+  return normalizeBrowseOpenTarget(value).url;
+}
+
+function getTranslateUrl(url, targetLanguage = "vi") {
+  const input = unwrapTranslateUrl(String(url || "").trim());
+  if (!input) {
+    return "";
+  }
+  return `https://translate.google.com/translate?sl=auto&tl=${encodeURIComponent(targetLanguage)}&u=${encodeURIComponent(input)}`;
+}
+
+function unwrapTranslateUrl(value) {
+  const input = String(value || "").trim();
+  if (!/translate\.google\.[^/]+\/translate/i.test(input)) {
+    return input;
+  }
+  try {
+    const parsed = new URL(input);
+    return parsed.searchParams.get("u") || input;
+  } catch {
+    return input;
+  }
+}
+
+async function getBrowseCurrentUrl() {
+  try {
+    const nativeBrowser = window.streamlineElectron?.browse;
+    if (nativeBrowser && typeof nativeBrowser.getUrl === "function") {
+      const result = await nativeBrowser.getUrl();
+      return String(result?.url || "").trim();
+    }
+    if (browseWebview && typeof browseWebview.getURL === "function") {
+      return String(browseWebview.getURL() || "").trim();
+    }
+  } catch {
+    // Browser URL lookup is best-effort.
+  }
+  return "";
+}
+
+function isQueueableWorkshopUrl(value) {
+  const url = unwrapTranslateUrl(value);
+  return /steamcommunity\.com\/(sharedfiles|workshop)\/filedetails\/\?id=\d+/i.test(url);
+}
+
+async function getBrowseQueueTarget() {
+  const currentUrl = await getBrowseCurrentUrl();
+  if (isQueueableWorkshopUrl(currentUrl)) {
+    return unwrapTranslateUrl(currentUrl);
+  }
+  const inputTarget = normalizeBrowseOpenUrl(browseUrlInput?.value || "");
+  if (isQueueableWorkshopUrl(inputTarget)) {
+    return unwrapTranslateUrl(inputTarget);
+  }
+  return "";
+}
+
+function setBrowseAddLockState({ locked, reason = "", target = "" }) {
+  browseAddTarget = target || "";
+  browseAddLockReason = reason || "";
+  if (!browseAddBtn) {
+    return;
+  }
+  browseAddBtn.classList.toggle("is-locked", !!locked);
+  browseAddBtn.setAttribute("aria-disabled", locked ? "true" : "false");
+  browseAddBtn.dataset.lockReason = locked ? browseAddLockReason : "";
+  browseAddBtn.title = locked ? browseAddLockReason : "Add current Workshop mod or collection to queue";
+}
+
+async function updateBrowseAddLockState() {
+  const token = ++browseAddLockUpdateToken;
+  const currentUrl = await getBrowseCurrentUrl();
+  if (token !== browseAddLockUpdateToken) {
+    return;
+  }
+  const inputUrl = normalizeBrowseOpenUrl(browseUrlInput?.value || "");
+  const currentTarget = isQueueableWorkshopUrl(currentUrl) ? unwrapTranslateUrl(currentUrl) : "";
+  const inputTarget = isQueueableWorkshopUrl(inputUrl) ? unwrapTranslateUrl(inputUrl) : "";
+  const target = currentTarget || inputTarget;
+  if (target) {
+    setBrowseAddLockState({ locked: false, target });
+    return;
+  }
+  const reason = currentUrl || browseUrlInput?.value
+    ? "Add is locked because this is not a Workshop mod or collection details page."
+    : "Add is locked until you open a Workshop mod or collection details page.";
+  setBrowseAddLockState({ locked: true, reason });
+}
+
+function setBrowseStatus(text, tone = "") {
+  if (!browseStatus) {
+    return;
+  }
+  browseStatus.textContent = text || "";
+  browseStatus.classList.toggle("good", tone === "good");
+  browseStatus.classList.toggle("bad", tone === "bad");
+}
+
+function syncBrowseWebviewSize() {
+  if (!browseWebview) {
+    return;
+  }
+  window.requestAnimationFrame(() => {
+    const bounds = getBrowseHostBounds();
+    if (bounds.width <= 0 || bounds.height <= 0) {
+      return;
+    }
+    browseWebview.style.width = `${bounds.width}px`;
+    browseWebview.style.height = `${bounds.height}px`;
+    const nativeBrowser = window.streamlineElectron?.browse;
+    if (nativeBrowser && typeof nativeBrowser.resize === "function" && state.activeAppTab === "browse") {
+      nativeBrowser.resize(bounds).catch(() => null);
+    }
+  });
+}
+
+function getBrowseHostBounds() {
+  const wrap = browseWebview?.closest?.(".browse-webview-wrap");
+  const rect = wrap?.getBoundingClientRect?.();
+  if (!rect) {
+    return { x: 0, y: 0, width: 0, height: 0 };
+  }
+  const x = Math.max(0, Math.round(rect.left));
+  const y = Math.max(0, Math.round(rect.top));
+  const maxWidth = Math.max(0, Math.round(window.innerWidth - x));
+  const maxHeight = Math.max(0, Math.round(window.innerHeight - y));
+  return {
+    x,
+    y,
+    width: Math.max(0, Math.min(Math.round(rect.width), maxWidth)),
+    height: Math.max(0, Math.min(Math.round(rect.height), maxHeight))
+  };
+}
+
+function isBrowseTranslateOverlayOpen() {
+  return !!browseTranslateOverlay && !browseTranslateOverlay.classList.contains("hidden");
+}
+
+function hideBrowseNativeBrowser() {
+  window.streamlineElectron?.browse?.hide?.().catch(() => null);
+}
+
+function showBrowseNativeBrowser() {
+  if (state.activeAppTab !== "browse" || !browseHasOpenedTarget || isBrowseTranslateOverlayOpen()) {
+    hideBrowseNativeBrowser();
+    return;
+  }
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      const bounds = getBrowseHostBounds();
+      if (bounds.width <= 0 || bounds.height <= 0) {
+        hideBrowseNativeBrowser();
+        return;
+      }
+      browseWebview.style.width = `${bounds.width}px`;
+      browseWebview.style.height = `${bounds.height}px`;
+      window.streamlineElectron?.browse?.show?.(bounds).catch(() => null);
+      window.streamlineElectron?.browse?.resize?.(bounds).catch(() => null);
+    });
+  });
+}
+
+async function openBrowseTarget(value) {
+  if (!browseWebview) {
+    setBrowseStatus("Embedded browser is only available in the desktop app.", "bad");
+    return;
+  }
+  const target = normalizeBrowseOpenTarget(value);
+  const targetUrl = target.url;
+  if (!targetUrl) {
+    browseHasOpenedTarget = false;
+    hideBrowseNativeBrowser();
+    setBrowseStatus("Enter a Workshop URL or AppID to browse.", "bad");
+    return;
+  }
+  if (target.appId) {
+    setBrowseWorkshopScope(target.appId);
+  }
+  setBrowseStatus(`Opening ${targetUrl}`);
+  try {
+    syncBrowseWebviewSize();
+    const nativeBrowser = window.streamlineElectron?.browse;
+    const bounds = getBrowseHostBounds();
+    if (nativeBrowser && typeof nativeBrowser.navigate === "function" && bounds.width > 0 && bounds.height > 0) {
+      const result = await nativeBrowser.navigate(targetUrl, bounds);
+      if (!result?.success) {
+        setBrowseStatus(result?.error || "Failed to open Workshop page.", "bad");
+        return;
+      }
+      browseHasOpenedTarget = true;
+      showBrowseNativeBrowser();
+      setBrowseStatus(
+        browseWorkshopScopeAppId ? `${targetUrl}  |  Scope AppID ${browseWorkshopScopeAppId}` : targetUrl,
+        "good"
+      );
+      return;
+    }
+    if (browseWebview && "src" in browseWebview) {
+      browseHasOpenedTarget = true;
+      browseWebview.src = targetUrl;
+      return;
+    }
+    setBrowseStatus("Embedded browser is only available in the Electron app.", "bad");
+  } catch (error) {
+    setBrowseStatus(error?.message || "Failed to open Workshop page.", "bad");
+  }
+}
+
+async function openModInBrowse(mod) {
+  const normalized = normalizeWorkshopModResult(mod);
+  const targetUrl = normalized.url || getWorkshopModUrl(normalized.mod_id);
+  if (!targetUrl) {
+    addLog("No mod URL available for Browse.", "bad");
+    return;
+  }
+  if (normalized.app_id) {
+    setBrowseWorkshopScope(normalized.app_id);
+  }
+  setBrowseAllowedMods([normalized]);
+  if (browseUrlInput) {
+    browseUrlInput.value = targetUrl;
+  }
+  setActiveAppTab("browse");
+  await openBrowseTarget(targetUrl);
+  void updateBrowseAddLockState();
+}
+
+function showBrowseTranslateOverlay() {
+  if (!browseTranslateOverlay) {
+    return;
+  }
+  hideBrowseNativeBrowser();
+  browseTranslateOverlay.classList.remove("hidden");
+  browseTranslateLanguage?.focus();
+  window.requestAnimationFrame(() => syncBrowseWebviewSize());
+}
+
+function hideBrowseTranslateOverlay() {
+  browseTranslateOverlay?.classList.add("hidden");
+  showBrowseNativeBrowser();
+}
+
+async function translateBrowsePage(targetLanguage = "vi") {
+  const currentUrl = await getBrowseCurrentUrl();
+  const sourceUrl = currentUrl || normalizeBrowseOpenUrl(browseUrlInput?.value || "");
+  const translateUrl = getTranslateUrl(sourceUrl, targetLanguage);
+  if (!translateUrl) {
+    setBrowseStatus("No page to translate.", "bad");
+    return;
+  }
+  hideBrowseTranslateOverlay();
+  await openBrowseTarget(translateUrl);
+}
+
+async function addWorkshopTargetToQueue(itemUrl, { clearQueueInput = false } = {}) {
+  const provider = providerSelect.value || "Default";
+  const target = String(itemUrl || "").trim();
+
+  if (!target) {
+    addLog("No workshop URL/ID entered.", "bad");
+    return false;
+  }
+
+  try {
+    const request = callApi("add_workshop_item", target, "", provider);
+    void pollEvents();
+    const result = await request;
+    void pollEvents();
+    if (!result?.success) {
+      addLog(result?.error || "Failed to add to queue.", "bad");
+      return false;
+    }
+  } catch {
+    browserQueue.push(createBrowserQueueItem(target, provider));
+    addLog("Queued in preview mode (local browser state).", "good");
+  }
+
+  if (clearQueueInput) {
+    queueForm.reset();
+    setProviderValue(provider);
+  }
+  await refreshQueue({ forceReload: true });
+  return true;
+}
+
+function normalizeWorkshopModResult(mod) {
+  const modId = String(mod?.mod_id || mod?.id || "").trim();
+  const appId = String(mod?.app_id || "").trim();
+  return {
+    game_name: String(mod?.game_name || (appId ? `AppID ${appId}` : "Unknown Game")),
+    mod_id: modId,
+    mod_name: String(mod?.mod_name || mod?.title || (modId ? `Mod ${modId}` : "Unknown Mod")),
+    app_id: appId,
+    url: String(mod?.url || (modId ? `https://steamcommunity.com/sharedfiles/filedetails/?id=${modId}` : ""))
+  };
+}
+
+function updateModListSummary(message = "") {
+  if (!modListSummary) {
+    return;
+  }
+  if (message) {
+    modListSummary.textContent = message;
+    return;
+  }
+  const total = modListResults.length;
+  modListSummary.textContent = total
+    ? `${total} mods found · add selected mods to queue`
+    : "Search an AppID to show workshop mods";
+}
+
+function setQueueListExpanded(section, toggle, expanded) {
+  section?.classList.toggle("expanded", !!expanded);
+  toggle?.setAttribute("aria-expanded", expanded ? "true" : "false");
+}
+
+function getQueuePanel() {
+  return queueListSection?.closest("[data-app-panel='queue']")
+    || modListSection?.closest("[data-app-panel='queue']")
+    || null;
+}
+
+function openModListPanel() {
+  const panel = getQueuePanel();
+  panel?.classList.add("has-mod-list", "mod-list-open");
+  panel?.classList.remove("queue-list-open");
+  setQueueListExpanded(modListSection, modListToggle, true);
+  setQueueListExpanded(queueListSection, queueListToggle, false);
+}
+
+function openQueueListPanel() {
+  const panel = getQueuePanel();
+  if (panel?.classList.contains("has-mod-list")) {
+    panel.classList.add("queue-list-open");
+    panel.classList.remove("mod-list-open");
+    setQueueListExpanded(modListSection, modListToggle, false);
+  }
+  setQueueListExpanded(queueListSection, queueListToggle, true);
+  renderQueueViewport(true);
+}
+
+function showModListSection() {
+  if (!modListSection) {
+    return;
+  }
+  modListSection.classList.remove("is-hidden");
+  openModListPanel();
+}
+
+function hideModListSection() {
+  if (!modListSection) {
+    return;
+  }
+  const panel = getQueuePanel();
+  modListResults = [];
+  modListSection.classList.add("is-hidden");
+  modListSection.classList.remove("expanded");
+  panel?.classList.remove("has-mod-list", "mod-list-open", "queue-list-open");
+  modListToggle?.setAttribute("aria-expanded", "false");
+  setQueueListExpanded(queueListSection, queueListToggle, true);
+  renderModListResults();
+}
+
+function renderModListResults(message = "") {
+  if (!modListBody) {
+    return;
+  }
+  modListBody.innerHTML = "";
+
+  if (!modListResults.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 4;
+    cell.className = "empty-cell";
+    cell.textContent = message || "Search by AppID or game Workshop link to list mods.";
+    row.appendChild(cell);
+    modListBody.appendChild(row);
+    updateModListSummary(message);
+    return;
+  }
+
+  modListResults.forEach((mod) => {
+    const row = document.createElement("tr");
+    row.dataset.modId = mod.mod_id;
+    const gameCell = document.createElement("td");
+    const idCell = document.createElement("td");
+    const nameCell = document.createElement("td");
+    const actionCell = document.createElement("td");
+    const addBtn = document.createElement("button");
+    const browseBtn = document.createElement("button");
+
+    gameCell.textContent = mod.game_name;
+    idCell.textContent = mod.mod_id;
+    nameCell.textContent = mod.mod_name;
+    addBtn.type = "button";
+    addBtn.className = "mod-list-add-btn";
+    addBtn.textContent = "Add";
+    addBtn.dataset.modId = mod.mod_id;
+    browseBtn.type = "button";
+    browseBtn.className = "mod-list-browse-btn";
+    browseBtn.textContent = "Browse";
+    browseBtn.dataset.modId = mod.mod_id;
+    actionCell.appendChild(addBtn);
+    actionCell.appendChild(browseBtn);
+
+    row.append(gameCell, idCell, nameCell, actionCell);
+    modListBody.appendChild(row);
+  });
+  updateModListSummary();
+}
+
+async function addWorkshopModsToQueue(mods) {
+  const normalizedMods = (mods || []).map(normalizeWorkshopModResult).filter((mod) => mod.mod_id);
+  if (!normalizedMods.length) {
+    addLog("No valid mods to add.", "bad");
+    return false;
+  }
+
+  const provider = providerSelect.value || "Default";
+  try {
+    const result = await callApi("add_workshop_mods", normalizedMods, provider);
+    if (!result?.success) {
+      addLog(result?.error || "Failed to add selected mods to queue.", "bad");
+      return false;
+    }
+    const added = Number(result.added || 0);
+    const skipped = Number(result.skipped || 0);
+    addLog(`Queue updated: ${added} added, ${skipped} skipped.`, added ? "good" : "info");
+    await refreshQueue({ forceReload: true });
+    return true;
+  } catch (error) {
+    addLog(error?.message || "Add selected mods is only available from desktop app.", "bad");
+    return false;
+  }
+}
+
+async function searchWorkshopModsForInput(input) {
+  const target = String(input || "").trim();
+  if (!target) {
+    addLog("No workshop URL/ID entered.", "bad");
+    return false;
+  }
+
+  const appId = getWorkshopAppIdSearchTarget(target);
+  if (!appId) {
+    return false;
+  }
+
+  try {
+    modListResults = [];
+    showModListSection();
+    renderModListResults(`Searching Workshop AppID ${appId}...`);
+    const result = await callApi("search_workshop_app", appId, "", 25);
+    if (!result?.success) {
+      renderModListResults("No workshop mods found for this AppID.");
+      addLog(result?.error || `No workshop mods found for AppID ${appId}.`, "bad");
+      return false;
+    }
+    modListResults = (result.mods || []).map(normalizeWorkshopModResult).filter((mod) => mod.mod_id);
+    setBrowseAllowedMods(modListResults);
+    renderModListResults(modListResults.length ? "" : `No mods found for AppID ${appId}.`);
+    addLog(`Loaded ${modListResults.length} mods for AppID ${appId}.`, modListResults.length ? "good" : "info");
+    return true;
+  } catch (error) {
+    renderModListResults("Search is only available from desktop app.");
+    addLog(error?.message || "Workshop search failed.", "bad");
+    return false;
+  }
+}
+
 function normalizeQueueItem(item, index) {
   const fallbackUrl = item.url || "";
   const modId = String(item.mod_id || parseModId(fallbackUrl) || String(index + 1));
@@ -2660,6 +3430,7 @@ function updateSearchPlaceholder() {
   }
   searchInput.placeholder = `${prefix}     /     Search by Mod ID or Name`;
   updateQueueStatisticsTooltip();
+  updateQueueListSummary();
 }
 
 function updateQueueStatisticsTooltip() {
@@ -2674,6 +3445,99 @@ function updateQueueStatisticsTooltip() {
     tooltip += `\nDownloading: ${downloading}`;
   }
   filterBtn.title = tooltip;
+}
+
+function updateQueueListSummary() {
+  if (!queueListSummary) {
+    return;
+  }
+  const total = Number(state.queueStats.total || 0);
+  const queued = Number(state.queueStats.queued || 0);
+  const downloaded = Number(state.queueStats.downloaded || 0);
+  const failed = Number(state.queueStats.failed || 0);
+  queueListSummary.textContent = total
+    ? `${total} mods · ${queued} queued · ${downloaded} downloaded · ${failed} failed`
+    : "Game / Mod ID / Mod Name / Status / Provider";
+}
+
+function wireExpandableList(section, toggle, onExpanded) {
+  if (!section || !toggle) {
+    return;
+  }
+  toggle.addEventListener("click", () => {
+    const nextExpanded = !section.classList.contains("expanded");
+    section.classList.toggle("expanded", nextExpanded);
+    toggle.setAttribute("aria-expanded", nextExpanded ? "true" : "false");
+    if (nextExpanded) {
+      onExpanded?.();
+    }
+  });
+}
+
+function wireQueueListToggle() {
+  modListToggle?.addEventListener("click", () => {
+    if (modListSection?.classList.contains("is-hidden")) {
+      return;
+    }
+    if (modListSection?.classList.contains("expanded")) {
+      openQueueListPanel();
+      return;
+    }
+    openModListPanel();
+  });
+
+  queueListToggle?.addEventListener("click", () => {
+    const panel = getQueuePanel();
+    if (panel?.classList.contains("has-mod-list")) {
+      if (queueListSection?.classList.contains("expanded")) {
+        openModListPanel();
+        return;
+      }
+      openQueueListPanel();
+      return;
+    }
+    const nextExpanded = !queueListSection.classList.contains("expanded");
+    setQueueListExpanded(queueListSection, queueListToggle, nextExpanded);
+    if (nextExpanded) {
+      renderQueueViewport(true);
+    }
+  });
+
+  modListBody?.addEventListener("click", async (event) => {
+    const browseButton = event.target.closest(".mod-list-browse-btn");
+    if (browseButton && modListBody.contains(browseButton)) {
+      const modId = String(browseButton.dataset.modId || "").trim();
+      const mod = modListResults.find((item) => String(item.mod_id) === modId);
+      if (!mod) {
+        addLog("Selected mod is no longer available.", "bad");
+        return;
+      }
+      browseButton.disabled = true;
+      try {
+        await openModInBrowse(mod);
+      } finally {
+        browseButton.disabled = false;
+      }
+      return;
+    }
+
+    const button = event.target.closest(".mod-list-add-btn");
+    if (!button || !modListBody.contains(button)) {
+      return;
+    }
+    const modId = String(button.dataset.modId || "").trim();
+    const mod = modListResults.find((item) => String(item.mod_id) === modId);
+    if (!mod) {
+      addLog("Selected mod is no longer available.", "bad");
+      return;
+    }
+    button.disabled = true;
+    try {
+      await addWorkshopModsToQueue([mod]);
+    } finally {
+      button.disabled = false;
+    }
+  });
 }
 
 function applyWorkshopHelpTooltip() {
@@ -2722,19 +3586,31 @@ function applyQueueColumnWidths() {
   const widths = getQueueColumnWidths();
   const hiddenColumns = getQueueColumnHidden();
   const showRowNumbers = !!state.config?.show_row_numbers;
-  queueTable.style.setProperty("--queue-col-width-game", `${widths[0]}px`);
-  queueTable.style.setProperty("--queue-col-width-mod-id", `${widths[1]}px`);
-  queueTable.style.setProperty("--queue-col-width-mod-name", `${widths[2]}px`);
-  queueTable.style.setProperty("--queue-col-width-status", `${widths[3]}px`);
-  queueTable.style.setProperty("--queue-col-width-provider", `${widths[4]}px`);
+  const rowNumberWidth = showRowNumbers ? 42 : 0;
+  const baseVisibleWidth = QUEUE_COLUMNS.reduce((total, _, index) => {
+    return hiddenColumns[index] ? total : total + widths[index];
+  }, 0);
+  const availableWidth = Math.max(0, Math.floor(queueTableWrap?.clientWidth || 0) - rowNumberWidth);
+  const stretchScale = availableWidth > baseVisibleWidth && baseVisibleWidth > 0
+    ? availableWidth / baseVisibleWidth
+    : 1;
+  const displayWidths = widths.map((width, index) => {
+    return hiddenColumns[index] ? width : Math.max(48, Math.floor(width * stretchScale));
+  });
 
-  let totalWidth = showRowNumbers ? 42 : 0;
+  queueTable.style.setProperty("--queue-col-width-game", `${displayWidths[0]}px`);
+  queueTable.style.setProperty("--queue-col-width-mod-id", `${displayWidths[1]}px`);
+  queueTable.style.setProperty("--queue-col-width-mod-name", `${displayWidths[2]}px`);
+  queueTable.style.setProperty("--queue-col-width-status", `${displayWidths[3]}px`);
+  queueTable.style.setProperty("--queue-col-width-provider", `${displayWidths[4]}px`);
+
+  let totalWidth = rowNumberWidth;
   QUEUE_COLUMNS.forEach((_, index) => {
     if (!hiddenColumns[index]) {
-      totalWidth += widths[index];
+      totalWidth += displayWidths[index];
     }
   });
-  totalWidth = Math.max(160, totalWidth);
+  totalWidth = Math.max(160, totalWidth, Math.floor(queueTableWrap?.clientWidth || 0));
   queueTable.style.setProperty("--queue-table-width", `${totalWidth}px`);
 }
 
@@ -3511,6 +4387,7 @@ function wireQueueVirtualization() {
     });
   });
   window.addEventListener("resize", () => {
+    applyQueueColumnWidths();
     renderQueueViewport(true);
   });
 }
@@ -6399,30 +7276,191 @@ function wireFilterControls() {
 async function handleAddToQueue(event) {
   event.preventDefault();
   const itemUrl = itemUrlInput.value.trim();
-  const provider = providerSelect.value || "Default";
-
   if (!itemUrl) {
     addLog("No workshop URL/ID entered.", "bad");
     return;
   }
 
-  try {
-    const request = callApi("add_workshop_item", itemUrl, "", provider);
-    void pollEvents();
-    const result = await request;
-    void pollEvents();
-    if (!result?.success) {
-      addLog(result?.error || "Failed to add to queue.", "bad");
-      return;
-    }
-  } catch {
-    browserQueue.push(createBrowserQueueItem(itemUrl, provider));
-    addLog("Queued in preview mode (local browser state).", "good");
+  if (isSpecificWorkshopTarget(itemUrl)) {
+    hideModListSection();
+    await addWorkshopTargetToQueue(itemUrl, { clearQueueInput: true });
+    return;
   }
 
-  queueForm.reset();
-  setProviderValue(provider);
-  await refreshQueue({ forceReload: true });
+  if (getWorkshopAppIdSearchTarget(itemUrl)) {
+    await searchWorkshopModsForInput(itemUrl);
+    return;
+  }
+
+  hideModListSection();
+  await addWorkshopTargetToQueue(itemUrl, { clearQueueInput: true });
+}
+
+function wireBrowseTab() {
+  browseForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await openBrowseTarget(browseUrlInput?.value || "");
+    void updateBrowseAddLockState();
+  });
+
+  browseUrlInput?.addEventListener("input", () => {
+    void updateBrowseAddLockState();
+  });
+
+  browseHomeBtn?.addEventListener("click", async () => {
+    if (browseUrlInput) {
+      browseUrlInput.value = "";
+    }
+    browseHasOpenedTarget = false;
+    setBrowseWorkshopScope("");
+    hideBrowseNativeBrowser();
+    setBrowseStatus("Enter a Workshop URL or AppID to browse.");
+    void updateBrowseAddLockState();
+  });
+
+  browseBackBtn?.addEventListener("click", async () => {
+    const result = await window.streamlineElectron?.browse?.back?.();
+    if (!result?.success) {
+      setBrowseStatus(result?.error || "No previous page.", "bad");
+      return;
+    }
+    void updateBrowseAddLockState();
+  });
+
+  browseForwardBtn?.addEventListener("click", async () => {
+    const result = await window.streamlineElectron?.browse?.forward?.();
+    if (!result?.success) {
+      setBrowseStatus(result?.error || "No next page.", "bad");
+      return;
+    }
+    void updateBrowseAddLockState();
+  });
+
+  browseTranslateBtn?.addEventListener("click", async () => {
+    showBrowseTranslateOverlay();
+  });
+
+  browseTranslateApplyBtn?.addEventListener("click", async () => {
+    await translateBrowsePage(browseTranslateLanguage?.value || "vi");
+  });
+
+  browseTranslateCancelBtn?.addEventListener("click", () => {
+    hideBrowseTranslateOverlay();
+  });
+
+  browseAddBtn?.addEventListener("click", async () => {
+    if (browseAddBtn.getAttribute("aria-disabled") === "true") {
+      setBrowseStatus(browseAddLockReason || "Add is locked.", "bad");
+      return;
+    }
+    const target = browseAddTarget || await getBrowseQueueTarget();
+    if (!target) {
+      await updateBrowseAddLockState();
+      setBrowseStatus(browseAddLockReason || "No Workshop page or input to add.", "bad");
+      addLog("No workshop URL/ID entered.", "bad");
+      return;
+    }
+    const ok = await addWorkshopTargetToQueue(target);
+    if (ok) {
+      setBrowseStatus(`Added to queue: ${target}`, "good");
+    }
+  });
+
+  browseWebview?.addEventListener("did-start-loading", () => {
+    syncBrowseWebviewSize();
+    setBrowseStatus("Loading Workshop page...");
+    browseOpenBtn?.setAttribute("disabled", "disabled");
+  });
+
+  browseWebview?.addEventListener("did-stop-loading", async () => {
+    syncBrowseWebviewSize();
+    browseOpenBtn?.removeAttribute("disabled");
+    const currentUrl = await getBrowseCurrentUrl();
+    const currentAppId = extractWorkshopAppId(currentUrl);
+    if (currentAppId) {
+      setBrowseWorkshopScope(currentAppId);
+    }
+    setBrowseStatus(currentUrl || "Ready");
+    void updateBrowseAddLockState();
+  });
+
+  browseWebview?.addEventListener("dom-ready", async () => {
+    syncBrowseWebviewSize();
+    const currentUrl = await getBrowseCurrentUrl();
+    if (currentUrl) {
+      const currentAppId = extractWorkshopAppId(currentUrl);
+      if (currentAppId) {
+        setBrowseWorkshopScope(currentAppId);
+      }
+      setBrowseStatus(currentUrl, "good");
+    }
+    void updateBrowseAddLockState();
+  });
+
+  browseWebview?.addEventListener("did-fail-load", (event) => {
+    if (event && event.isMainFrame === false) {
+      return;
+    }
+    browseOpenBtn?.removeAttribute("disabled");
+    const description = event?.errorDescription || "Failed to load Workshop page.";
+    setBrowseStatus(description, "bad");
+  });
+
+  browseWebview?.addEventListener("console-message", (event) => {
+    if (event?.message) {
+      addLog(`Browse webview: ${event.message}`, "info", { source: "ui", action: "browse_webview" });
+    }
+  });
+
+  window.streamlineElectron?.browse?.onEvent?.((payload) => {
+    const type = String(payload?.type || "");
+    const url = String(payload?.url || "");
+    const appId = extractWorkshopAppId(url);
+    if (appId) {
+      setBrowseWorkshopScope(appId);
+    }
+    if (type === "loading") {
+      browseHasOpenedTarget = true;
+      setBrowseStatus(url ? `Loading ${url}` : "Loading Workshop page...");
+      browseOpenBtn?.setAttribute("disabled", "disabled");
+      return;
+    }
+    browseOpenBtn?.removeAttribute("disabled");
+    if (type === "failed") {
+      setBrowseStatus(payload?.error || "Failed to load Workshop page.", "bad");
+      void updateBrowseAddLockState();
+      return;
+    }
+    if (type === "blocked") {
+      setBrowseStatus(payload?.error || "Blocked outside current Workshop scope.", "bad");
+      void updateBrowseAddLockState();
+      return;
+    }
+    if (type === "loaded") {
+      browseHasOpenedTarget = true;
+      setBrowseStatus(
+        browseWorkshopScopeAppId ? `${url}  |  Scope AppID ${browseWorkshopScopeAppId}` : (url || "Ready"),
+        "good"
+      );
+      void updateBrowseAddLockState();
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    if (
+      browseTranslateOverlay
+      && !browseTranslateOverlay.classList.contains("hidden")
+      && !event.target.closest("#browse-translate-overlay")
+      && !event.target.closest("#browse-translate-btn")
+    ) {
+      hideBrowseTranslateOverlay();
+    }
+  });
+
+  setBrowseAddLockState({
+    locked: true,
+    reason: "Add is locked until you open a Workshop mod or collection details page."
+  });
 }
 
 function getQueueStatusBucket(statusValue) {
@@ -6809,15 +7847,21 @@ async function init() {
   wireLogsContextMenu();
   wireLogToolbar();
   wireHeaderContextMenu();
+  wireAppTabs();
+  wireQueueListToggle();
   wireQueueVirtualization();
   wireQueueRowInteractions();
   wireGlobalShortcuts();
   wireWindowResizeGrip();
   window.addEventListener("resize", () => {
     scheduleLogTimelineRender({ preserveScroll: true });
+    if (state.activeAppTab === "browse") {
+      showBrowseNativeBrowser();
+    }
   });
   await wireControlButtons();
   wireFilterControls();
+  wireBrowseTab();
 
   try {
     const data = await callApi("get_bootstrap_data");
@@ -6840,6 +7884,11 @@ async function init() {
     const provider = providerSelect.value || "Default";
     if (!itemUrl) {
       addLog("No workshop URL/ID entered.", "bad");
+      return;
+    }
+    if (!isSpecificWorkshopTarget(itemUrl) && getWorkshopAppIdSearchTarget(itemUrl)) {
+      await searchWorkshopModsForInput(itemUrl);
+      addLog("AppID search loaded. Add mods to Queue before starting download.", "info");
       return;
     }
     try {
