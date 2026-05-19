@@ -1,0 +1,16 @@
+{
+  "name": "streamline-workshop-downloader-electron",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron shell for Streamline Workshop Downloader.",
+  "main": "electron/main.js",
+  "scripts": {
+    "electron": "electron .",
+    "electron:dev": "electron . --dev",
+    "dev": "electron . --dev",
+    "check:electron": "node --check electron/main.js && node --check electron/preload.js"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7"
+  }
+}
