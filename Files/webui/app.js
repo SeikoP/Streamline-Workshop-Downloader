@@ -116,7 +116,12 @@ let browseAddTarget = "";
 let browseAddLockReason = "Open a Workshop mod or collection page before adding.";
 let browseAddLockUpdateToken = 0;
 let browseHasOpenedTarget = false;
+let gameSearchPopup = null;
+let gameSearchTimer = null;
+let gameSearchToken = 0;
+let activeGameSearchInput = null;
 const SEARCH_RENDER_DEBOUNCE_MS = 180;
+const GAME_SEARCH_DEBOUNCE_MS = 220;
 const DOUBLE_SHIFT_WINDOW_MS = 360;
 const EVENT_POLL_INTERVAL_MS = 250;
 const VIRTUAL_ROW_HEIGHT_FALLBACK = 18;
@@ -2799,6 +2804,20 @@ function getWorkshopAppIdSearchTarget(value) {
   return "";
 }
 
+function shouldSearchGamesForInput(value) {
+  const input = String(value || "").trim();
+  if (input.length < 2) {
+    return false;
+  }
+  if (/^https?:\/\//i.test(input) || /^steamcommunity\.com\//i.test(input)) {
+    return false;
+  }
+  if (isSpecificWorkshopTarget(input) || getWorkshopAppIdSearchTarget(input)) {
+    return false;
+  }
+  return true;
+}
+
 function setBrowseWorkshopScope(appId) {
   browseWorkshopScopeAppId = /^\d+$/.test(String(appId || "")) ? String(appId) : "";
   window.streamlineElectron?.browse?.setScope?.(browseWorkshopScopeAppId).catch(() => null);
@@ -3283,6 +3302,151 @@ async function addWorkshopModsToQueue(mods) {
     addLog(error?.message || "Add selected mods is only available from desktop app.", "bad");
     return false;
   }
+}
+
+function ensureGameSearchPopup() {
+  if (gameSearchPopup) {
+    return gameSearchPopup;
+  }
+  gameSearchPopup = document.createElement("div");
+  gameSearchPopup.id = "game-search-popup";
+  gameSearchPopup.className = "game-search-popup hidden";
+  document.body.appendChild(gameSearchPopup);
+  return gameSearchPopup;
+}
+
+function hideGameSearchPopup() {
+  const shouldRestoreBrowse = activeGameSearchInput === browseUrlInput
+    && state.activeAppTab === "browse"
+    && browseHasOpenedTarget
+    && browseTranslateOverlay?.classList.contains("hidden");
+  if (gameSearchPopup) {
+    gameSearchPopup.classList.add("hidden");
+    gameSearchPopup.innerHTML = "";
+  }
+  activeGameSearchInput = null;
+  if (shouldRestoreBrowse) {
+    showBrowseNativeBrowser();
+  }
+}
+
+function positionGameSearchPopup(input) {
+  const popup = ensureGameSearchPopup();
+  const rect = input.getBoundingClientRect();
+  popup.style.left = `${Math.max(8, rect.left)}px`;
+  popup.style.top = `${rect.bottom + 4}px`;
+  popup.style.width = `${Math.max(260, rect.width)}px`;
+}
+
+function renderGameSearchPopup(input, games, message = "") {
+  const popup = ensureGameSearchPopup();
+  activeGameSearchInput = input;
+  if (input === browseUrlInput) {
+    hideBrowseNativeBrowser();
+  }
+  positionGameSearchPopup(input);
+  popup.innerHTML = "";
+
+  if (!games?.length) {
+    const empty = document.createElement("div");
+    empty.className = "game-search-empty";
+    empty.textContent = message || "No game found. Update AppIDs first.";
+    popup.appendChild(empty);
+    popup.classList.remove("hidden");
+    return;
+  }
+
+  games.forEach((game) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "game-search-item";
+    button.dataset.appId = game.app_id;
+    button.dataset.gameName = game.game_name;
+    button.innerHTML = `
+      <span class="game-search-name">${escapeHtml(game.game_name)}</span>
+      <span class="game-search-appid">${escapeHtml(game.app_id)}</span>
+    `;
+    button.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      void selectGameSearchResult(input, game);
+    });
+    popup.appendChild(button);
+  });
+  popup.classList.remove("hidden");
+}
+
+async function selectGameSearchResult(input, game) {
+  const appId = String(game?.app_id || "").trim();
+  const gameName = String(game?.game_name || "").trim();
+  if (!appId) {
+    return;
+  }
+  input.value = appId;
+  hideGameSearchPopup();
+  if (input === browseUrlInput) {
+    setBrowseWorkshopScope(appId);
+    setBrowseStatus(`Opening ${gameName || `AppID ${appId}`} Workshop...`);
+    await openBrowseTarget(appId);
+    return;
+  }
+  showModListSection();
+  renderModListResults(`Searching ${gameName || `AppID ${appId}`} Workshop mods...`);
+  await searchWorkshopModsForInput(appId);
+}
+
+async function searchGamesForInput(input) {
+  const query = String(input?.value || "").trim();
+  if (!input || !shouldSearchGamesForInput(query)) {
+    hideGameSearchPopup();
+    return;
+  }
+  const token = ++gameSearchToken;
+  try {
+    const result = await callApi("search_games", query, 25);
+    if (token !== gameSearchToken || input !== activeGameSearchInput) {
+      return;
+    }
+    if (!result?.success) {
+      renderGameSearchPopup(input, [], result?.error || "No game found. Update AppIDs first.");
+      return;
+    }
+    renderGameSearchPopup(input, result.games || [], "No game found. Update AppIDs first.");
+  } catch (error) {
+    if (token === gameSearchToken) {
+      renderGameSearchPopup(input, [], error?.message || "Game search is only available from desktop app.");
+    }
+  }
+}
+
+function scheduleGameSearch(input) {
+  activeGameSearchInput = input;
+  if (gameSearchTimer) {
+    window.clearTimeout(gameSearchTimer);
+  }
+  gameSearchTimer = window.setTimeout(() => {
+    void searchGamesForInput(input);
+  }, GAME_SEARCH_DEBOUNCE_MS);
+}
+
+function wireGameSearchInput(input) {
+  if (!input) {
+    return;
+  }
+  input.setAttribute("autocomplete", "off");
+  input.addEventListener("input", () => {
+    scheduleGameSearch(input);
+  });
+  input.addEventListener("focus", () => {
+    if (shouldSearchGamesForInput(input.value)) {
+      activeGameSearchInput = input;
+      scheduleGameSearch(input);
+    }
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      hideGameSearchPopup();
+    }
+  });
 }
 
 async function searchWorkshopModsForInput(input) {
@@ -7273,6 +7437,21 @@ function wireFilterControls() {
   });
 }
 
+function wireGameSearch() {
+  wireGameSearchInput(itemUrlInput);
+  wireGameSearchInput(browseUrlInput);
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".game-search-popup") && event.target !== activeGameSearchInput) {
+      hideGameSearchPopup();
+    }
+  });
+  window.addEventListener("resize", () => {
+    if (activeGameSearchInput && gameSearchPopup && !gameSearchPopup.classList.contains("hidden")) {
+      positionGameSearchPopup(activeGameSearchInput);
+    }
+  });
+}
+
 async function handleAddToQueue(event) {
   event.preventDefault();
   const itemUrl = itemUrlInput.value.trim();
@@ -7292,6 +7471,13 @@ async function handleAddToQueue(event) {
     return;
   }
 
+  if (shouldSearchGamesForInput(itemUrl)) {
+    activeGameSearchInput = itemUrlInput;
+    await searchGamesForInput(itemUrlInput);
+    addLog("Select a game from the keyword results to search its Workshop mods.", "info");
+    return;
+  }
+
   hideModListSection();
   await addWorkshopTargetToQueue(itemUrl, { clearQueueInput: true });
 }
@@ -7299,7 +7485,14 @@ async function handleAddToQueue(event) {
 function wireBrowseTab() {
   browseForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await openBrowseTarget(browseUrlInput?.value || "");
+    const target = browseUrlInput?.value || "";
+    if (shouldSearchGamesForInput(target)) {
+      activeGameSearchInput = browseUrlInput;
+      await searchGamesForInput(browseUrlInput);
+      setBrowseStatus("Select a game from the keyword results to open its Workshop.", "info");
+      return;
+    }
+    await openBrowseTarget(target);
     void updateBrowseAddLockState();
   });
 
@@ -7862,6 +8055,7 @@ async function init() {
   await wireControlButtons();
   wireFilterControls();
   wireBrowseTab();
+  wireGameSearch();
 
   try {
     const data = await callApi("get_bootstrap_data");

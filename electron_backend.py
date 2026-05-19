@@ -42,6 +42,7 @@ ALLOWED_API_METHODS = {
     "remove_mods",
     "reorder_accounts",
     "reset_status",
+    "search_games",
     "search_workshop_app",
     "send_steamcmd_login_input",
     "set_active_account",

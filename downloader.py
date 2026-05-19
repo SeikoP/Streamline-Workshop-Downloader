@@ -247,6 +247,9 @@ class WebMainGuiApi:
     def search_workshop_app(self, app_id_input, query="", max_pages=25):
         return self.backend.search_workshop_app(app_id_input, query, max_pages)
 
+    def search_games(self, keyword, limit=25):
+        return self.backend.search_games(keyword, limit)
+
     def add_workshop_mods(self, mods, provider="Default"):
         return self.backend.add_workshop_mods(mods, provider)
 

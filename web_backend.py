@@ -2141,6 +2141,51 @@ class StreamlineWebBackend:
         except Exception as e:
             return {"success": False, "error": f"Failed to search workshop AppID {app_id}: {e}", "mods": []}
 
+    def search_games(self, keyword, limit=25):
+        query = str(keyword or "").strip().lower()
+        try:
+            max_results = max(1, min(100, int(limit or 25)))
+        except Exception:
+            max_results = 25
+
+        if not self.app_ids:
+            self._load_app_ids()
+        if not query:
+            return {"success": True, "games": [], "count": 0, "appids_count": len(self.app_ids)}
+        if not self.app_ids:
+            return {
+                "success": False,
+                "error": "AppIDs database is empty. Update AppIDs first.",
+                "games": [],
+                "count": 0,
+                "appids_count": 0,
+            }
+
+        exact = []
+        prefix = []
+        contains = []
+        for app_id, game_name in self.app_ids.items():
+            app_text = str(app_id).lower()
+            name_text = str(game_name).lower()
+            item = {"app_id": str(app_id), "game_name": str(game_name)}
+            if query == app_text or query == name_text:
+                exact.append(item)
+            elif app_text.startswith(query) or name_text.startswith(query):
+                prefix.append(item)
+            elif query in app_text or query in name_text:
+                contains.append(item)
+
+        ranked = exact + prefix + contains
+        ranked.sort(key=lambda game: (str(game["game_name"]).lower(), str(game["app_id"])))
+        games = ranked[:max_results]
+        return {
+            "success": True,
+            "games": games,
+            "count": len(games),
+            "total_matches": len(ranked),
+            "appids_count": len(self.app_ids),
+        }
+
     def add_workshop_mods(self, mods, provider="Default"):
         try:
             result = self._append_mods_to_queue_bulk(mods or [], provider)

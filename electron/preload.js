@@ -117,6 +117,7 @@ const apiMethods = [
   "send_steamcmd_login_input",
   "set_active_account",
   "set_global_provider",
+  "search_games",
   "search_workshop_app",
   "start_download",
   "update_appids",
