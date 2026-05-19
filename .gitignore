@@ -3,6 +3,16 @@ Files/steamcmd
 Files/config.json
 Files/debug
 Files/logs
+Files/Logs/
 .idea/
+.gitnexus/
 Downloads/
 __pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+npm-debug.log*
+dist/
+build/
+out/
+venv/
