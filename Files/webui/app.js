@@ -2973,7 +2973,15 @@ function syncBrowseWebviewSize() {
   if (!browseWebview) {
     return;
   }
+  if (isBrowseTranslateOverlayOpen()) {
+    hideBrowseNativeBrowser();
+    return;
+  }
   window.requestAnimationFrame(() => {
+    if (isBrowseTranslateOverlayOpen()) {
+      hideBrowseNativeBrowser();
+      return;
+    }
     const bounds = getBrowseHostBounds();
     if (bounds.width <= 0 || bounds.height <= 0) {
       return;
@@ -3105,7 +3113,7 @@ function showBrowseTranslateOverlay() {
   hideBrowseNativeBrowser();
   browseTranslateOverlay.classList.remove("hidden");
   browseTranslateLanguage?.focus();
-  window.requestAnimationFrame(() => syncBrowseWebviewSize());
+  window.requestAnimationFrame(() => hideBrowseNativeBrowser());
 }
 
 function hideBrowseTranslateOverlay() {
