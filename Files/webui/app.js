@@ -116,6 +116,8 @@ let browseAddTarget = "";
 let browseAddLockReason = "Open a Workshop mod or collection page before adding.";
 let browseAddLockUpdateToken = 0;
 let browseHasOpenedTarget = false;
+let browseNativeVisibilityToken = 0;
+let browseTranslatePickerOpen = false;
 let gameSearchPopup = null;
 let gameSearchTimer = null;
 let gameSearchToken = 0;
@@ -2994,7 +2996,19 @@ function getBrowseHostBounds() {
     return { x: 0, y: 0, width: 0, height: 0 };
   }
   const x = Math.max(0, Math.round(rect.left));
-  const y = Math.max(0, Math.round(rect.top));
+  let y = Math.max(0, Math.round(rect.top));
+  if (isBrowseTranslateOverlayOpen()) {
+    const overlayRect = browseTranslateOverlay?.getBoundingClientRect?.();
+    if (overlayRect) {
+      y = Math.max(y, Math.round(overlayRect.bottom + 6));
+    }
+    if (browseTranslatePickerOpen) {
+      const pickerRect = browseTranslateLanguage?.getBoundingClientRect?.();
+      if (pickerRect) {
+        y = Math.max(y, Math.round(pickerRect.bottom + 176));
+      }
+    }
+  }
   const maxWidth = Math.max(0, Math.round(window.innerWidth - x));
   const maxHeight = Math.max(0, Math.round(window.innerHeight - y));
   return {
@@ -3010,16 +3024,22 @@ function isBrowseTranslateOverlayOpen() {
 }
 
 function hideBrowseNativeBrowser() {
+  browseNativeVisibilityToken += 1;
   window.streamlineElectron?.browse?.hide?.().catch(() => null);
 }
 
 function showBrowseNativeBrowser() {
-  if (state.activeAppTab !== "browse" || !browseHasOpenedTarget || isBrowseTranslateOverlayOpen()) {
+  const token = ++browseNativeVisibilityToken;
+  if (state.activeAppTab !== "browse" || !browseHasOpenedTarget) {
     hideBrowseNativeBrowser();
     return;
   }
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
+      if (token !== browseNativeVisibilityToken) {
+        hideBrowseNativeBrowser();
+        return;
+      }
       const bounds = getBrowseHostBounds();
       if (bounds.width <= 0 || bounds.height <= 0) {
         hideBrowseNativeBrowser();
@@ -3102,15 +3122,26 @@ function showBrowseTranslateOverlay() {
   if (!browseTranslateOverlay) {
     return;
   }
-  hideBrowseNativeBrowser();
   browseTranslateOverlay.classList.remove("hidden");
   browseTranslateLanguage?.focus();
-  window.requestAnimationFrame(() => syncBrowseWebviewSize());
+  scheduleBrowseNativeReflow();
 }
 
 function hideBrowseTranslateOverlay() {
+  browseTranslatePickerOpen = false;
   browseTranslateOverlay?.classList.add("hidden");
+  scheduleBrowseNativeReflow();
+}
+
+function setBrowseTranslatePickerOpen(open) {
+  browseTranslatePickerOpen = !!open;
+  scheduleBrowseNativeReflow();
+}
+
+function scheduleBrowseNativeReflow() {
   showBrowseNativeBrowser();
+  window.requestAnimationFrame(() => showBrowseNativeBrowser());
+  window.setTimeout(() => showBrowseNativeBrowser(), 80);
 }
 
 async function translateBrowsePage(targetLanguage = "vi") {
@@ -7537,11 +7568,29 @@ function wireBrowseTab() {
     showBrowseTranslateOverlay();
   });
 
+  browseTranslateLanguage?.addEventListener("focus", () => {
+    setBrowseTranslatePickerOpen(true);
+  });
+
+  browseTranslateLanguage?.addEventListener("mousedown", () => {
+    setBrowseTranslatePickerOpen(true);
+  });
+
+  browseTranslateLanguage?.addEventListener("change", () => {
+    window.setTimeout(() => setBrowseTranslatePickerOpen(false), 80);
+  });
+
+  browseTranslateLanguage?.addEventListener("blur", () => {
+    window.setTimeout(() => setBrowseTranslatePickerOpen(false), 120);
+  });
+
   browseTranslateApplyBtn?.addEventListener("click", async () => {
+    setBrowseTranslatePickerOpen(false);
     await translateBrowsePage(browseTranslateLanguage?.value || "vi");
   });
 
   browseTranslateCancelBtn?.addEventListener("click", () => {
+    setBrowseTranslatePickerOpen(false);
     hideBrowseTranslateOverlay();
   });
 
