@@ -3332,10 +3332,11 @@ function hideGameSearchPopup() {
 
 function positionGameSearchPopup(input) {
   const popup = ensureGameSearchPopup();
-  const rect = input.getBoundingClientRect();
+  const anchor = input.closest(".line-input-wrap") || input;
+  const rect = anchor.getBoundingClientRect();
   popup.style.left = `${Math.max(8, rect.left)}px`;
-  popup.style.top = `${rect.bottom + 4}px`;
-  popup.style.width = `${Math.max(260, rect.width)}px`;
+  popup.style.top = `${rect.bottom + 2}px`;
+  popup.style.width = `${Math.max(240, rect.width)}px`;
 }
 
 function renderGameSearchPopup(input, games, message = "") {
