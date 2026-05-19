@@ -2106,6 +2106,50 @@ class StreamlineWebBackend:
 
         return {"success": True, "added": added, "skipped": skipped, "queue_size": queue_size}
 
+    def search_workshop_app(self, app_id_input, query="", max_pages=25):
+        app_id = str(app_id_input or "").strip()
+        if not app_id:
+            return {"success": False, "error": "Missing AppID.", "mods": []}
+        if not app_id.isdigit():
+            match = re.search(r"(?:/app/|[?&]appid=)(\d+)", app_id, flags=re.IGNORECASE)
+            app_id = match.group(1) if match else ""
+        if not app_id:
+            return {"success": False, "error": "Invalid AppID.", "mods": []}
+
+        try:
+            page_limit = max(1, min(50, int(max_pages or 25)))
+        except Exception:
+            page_limit = 25
+
+        try:
+            mods = self._scrape_workshop_app(app_id, max_pages=page_limit, concurrency=12)
+            search_text = str(query or "").strip().lower()
+            if search_text:
+                mods = [
+                    mod for mod in mods
+                    if search_text in str(mod.get("mod_id", "")).lower()
+                    or search_text in str(mod.get("mod_name", "")).lower()
+                ]
+            return {
+                "success": True,
+                "app_id": app_id,
+                "game_name": self.app_ids.get(app_id, f"AppID {app_id}"),
+                "mods": mods,
+                "count": len(mods),
+                "max_pages": page_limit,
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Failed to search workshop AppID {app_id}: {e}", "mods": []}
+
+    def add_workshop_mods(self, mods, provider="Default"):
+        try:
+            result = self._append_mods_to_queue_bulk(mods or [], provider)
+            if result.get("added", 0) or result.get("skipped", 0):
+                self._emit_queue_refresh_throttled(force=True)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e), "added": 0, "skipped": 0, "queue_size": 0}
+
     def add_workshop_item(self, item_url, app_id="", provider="Default"):
         return self.add_preview_queue_item(item_url, app_id, provider)
 

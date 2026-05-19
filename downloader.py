@@ -244,6 +244,12 @@ class WebMainGuiApi:
     def add_workshop_item(self, item_url, app_id="", provider="Default"):
         return self.backend.add_workshop_item(item_url, app_id, provider)
 
+    def search_workshop_app(self, app_id_input, query="", max_pages=25):
+        return self.backend.search_workshop_app(app_id_input, query, max_pages)
+
+    def add_workshop_mods(self, mods, provider="Default"):
+        return self.backend.add_workshop_mods(mods, provider)
+
     def download_workshop_item_now(self, item_url, app_id="", provider="Default"):
         result = self.backend.add_preview_queue_item(item_url, app_id, provider)
         if not result.get("success"):
