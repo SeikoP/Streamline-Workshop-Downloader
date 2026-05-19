@@ -15,6 +15,7 @@ let dragState = null;
 let workshopBrowserView = null;
 let workshopBrowserScopeAppId = "";
 let workshopBrowserAllowedModIds = new Set();
+let workshopBrowserTranslateToolbarBlockerInstalled = false;
 
 const isDevMode = process.argv.includes("--dev") || process.env.STREAMLINE_ELECTRON_DEV === "1";
 const MIN_WINDOW_WIDTH = 695;
@@ -115,6 +116,7 @@ function ensureWorkshopBrowserView() {
       nodeIntegration: false
     }
   });
+  installGoogleTranslateToolbarBlocker(workshopBrowserView.webContents.session);
   workshopBrowserView.webContents.setWindowOpenHandler(({ url }) => {
     if (!isWorkshopBrowserUrlAllowed(url)) {
       mainWindow?.webContents.send("workshop-browser:event", {
@@ -165,6 +167,19 @@ function ensureWorkshopBrowserView() {
     });
   });
   return workshopBrowserView;
+}
+
+function installGoogleTranslateToolbarBlocker(session) {
+  if (!session || workshopBrowserTranslateToolbarBlockerInstalled) {
+    return;
+  }
+  workshopBrowserTranslateToolbarBlockerInstalled = true;
+  session.webRequest.onBeforeRequest(
+    { urls: ["*://translate.google.com/websitetranslationui*"] },
+    (_details, callback) => {
+      callback({ cancel: true });
+    }
+  );
 }
 
 function isGoogleTranslatedPage(url) {
