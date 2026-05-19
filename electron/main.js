@@ -144,10 +144,14 @@ function ensureWorkshopBrowserView() {
     });
   });
   workshopBrowserView.webContents.on("did-finish-load", () => {
+    hideGoogleTranslateToolbar(workshopBrowserView.webContents);
     mainWindow?.webContents.send("workshop-browser:event", {
       type: "loaded",
       url: workshopBrowserView?.webContents.getURL() || ""
     });
+  });
+  workshopBrowserView.webContents.on("did-frame-finish-load", () => {
+    hideGoogleTranslateToolbar(workshopBrowserView?.webContents);
   });
   workshopBrowserView.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
     if (isMainFrame === false) {
@@ -161,6 +165,69 @@ function ensureWorkshopBrowserView() {
     });
   });
   return workshopBrowserView;
+}
+
+function isGoogleTranslatedPage(url) {
+  const text = String(url || "");
+  return /translate\.goog\//i.test(text) || /translate\.google\.[^/]+\/translate/i.test(text);
+}
+
+function hideGoogleTranslateToolbar(webContents) {
+  if (!webContents || webContents.isDestroyed() || !isGoogleTranslatedPage(webContents.getURL())) {
+    return;
+  }
+  const cleanupScript = `
+    (() => {
+      const styleId = "streamline-hide-google-translate-toolbar";
+      const css = [
+        'iframe[src*="translate.google.com/websitetranslationui"]',
+        'iframe[src*="translate.googleapis.com"]',
+        'iframe.goog-te-banner-frame',
+        '.goog-te-banner-frame',
+        '.goog-te-balloon-frame',
+        '#goog-gt-tt',
+        '.skiptranslate'
+      ].join(',') + '{display:none!important;visibility:hidden!important;height:0!important;min-height:0!important;max-height:0!important;}'
+        + ' body{top:0!important;margin-top:0!important;}'
+        + ' html{margin-top:0!important;}';
+      let style = document.getElementById(styleId);
+      if (!style) {
+        style = document.createElement('style');
+        style.id = styleId;
+        (document.head || document.documentElement).appendChild(style);
+      }
+      style.textContent = css;
+      const selectors = [
+        'iframe[src*="translate.google.com/websitetranslationui"]',
+        'iframe[src*="translate.googleapis.com"]',
+        'iframe.goog-te-banner-frame',
+        '.goog-te-banner-frame',
+        '.goog-te-balloon-frame',
+        '#goog-gt-tt',
+        '.skiptranslate'
+      ];
+      const cleanup = () => {
+        document.documentElement.style.marginTop = '0px';
+        if (document.body) {
+          document.body.style.top = '0px';
+          document.body.style.marginTop = '0px';
+        }
+        document.querySelectorAll(selectors.join(',')).forEach((node) => node.remove());
+      };
+      cleanup();
+      if (!window.__streamlineGoogleTranslateToolbarObserver) {
+        window.__streamlineGoogleTranslateToolbarObserver = new MutationObserver(cleanup);
+        window.__streamlineGoogleTranslateToolbarObserver.observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['style', 'class']
+        });
+      }
+      return true;
+    })();
+  `;
+  webContents.executeJavaScript(cleanupScript, true).catch(() => null);
 }
 
 function extractSteamAppId(url) {
