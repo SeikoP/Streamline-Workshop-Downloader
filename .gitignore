@@ -5,6 +5,7 @@ Files/debug
 Files/logs
 Files/Logs/
 .idea/
+.claude/
 .gitnexus/
 Downloads/
 __pycache__/
