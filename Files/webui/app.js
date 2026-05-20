@@ -60,6 +60,26 @@ const commandPaletteList = document.getElementById("command-palette-list");
 const queueTable = document.getElementById("queue-table");
 const queueHeadRow = document.getElementById("queue-head-row");
 const queueTableWrap = document.getElementById("queue-table-wrap") || queueTable?.closest(".queue-table-wrap");
+const updateTargetForm = document.getElementById("update-target-form");
+const updateGameInput = document.getElementById("update-game-input");
+const updateFolderInput = document.getElementById("update-folder-input");
+const updateChooseFolderBtn = document.getElementById("update-choose-folder-btn");
+const updateSaveTargetBtn = document.getElementById("update-save-target-btn");
+const updateScanAllBtn = document.getElementById("update-scan-all-btn");
+const updateHeaderAddQueueBtn = document.getElementById("update-header-add-queue-btn");
+const updateTargetSelect = document.getElementById("update-target-select");
+const updateStatusFilter = document.getElementById("update-status-filter");
+const updateSummary = document.getElementById("update-summary");
+const updateTargetHeading = document.getElementById("update-target-heading");
+const updateTreeSummary = document.getElementById("update-tree-summary");
+const updateTreeToggle = document.getElementById("update-tree-toggle");
+const updateTreeSection = document.querySelector(".update-tree-section");
+const updateBody = document.getElementById("update-body");
+const updateAddQueueBtn = document.getElementById("update-add-queue-btn");
+const updateNowBtn = document.getElementById("update-now-btn");
+const updateExposeListBtn = document.getElementById("update-expose-list-btn");
+const updateRemoveTargetBtn = document.getElementById("update-remove-target-btn");
+const updateEventLog = document.getElementById("update-event-log");
 const modListSection = document.getElementById("mod-list-section");
 const modListToggle = document.getElementById("mod-list-toggle");
 const modListSummary = document.getElementById("mod-list-summary");
@@ -116,6 +136,7 @@ let browseAddTarget = "";
 let browseAddLockReason = "Open a Workshop mod or collection page before adding.";
 let browseAddLockUpdateToken = 0;
 let browseHasOpenedTarget = false;
+let browseBackFallbackAppId = "";
 let gameSearchPopup = null;
 let gameSearchTimer = null;
 let gameSearchToken = 0;
@@ -170,6 +191,10 @@ const state = {
   config: {},
   version: "",
   activeAppTab: "queue",
+  updateTargets: [],
+  selectedUpdateTargetId: "",
+  selectedUpdateModIds: new Set(),
+  updateStatusFilter: "all",
   selectedModIds: new Set(),
   isDownloading: false,
   cancelPending: false,
@@ -286,6 +311,9 @@ function setActiveAppTab(tabName) {
   if (nextTab === "queue") {
     renderQueueViewport(true);
     scheduleLogTimelineRender({ preserveScroll: true });
+  }
+  if (nextTab === "update") {
+    void refreshUpdateTargets();
   }
   if (token === appTabAnimationToken && nextTab === "browse") {
     showBrowseNativeBrowser();
@@ -823,6 +851,7 @@ function scheduleLogTimelineRender({ preserveScroll = false } = {}) {
     logRenderQueued = false;
     logRenderPreserveScroll = false;
     renderLogTimeline({ preserveScroll: preserve });
+    renderUpdateLogMirror();
   });
 }
 
@@ -909,22 +938,27 @@ function updateLogHeaderUi() {
   }
 }
 
-function renderLogTimeline(options = {}) {
-  if (!eventLog) {
+function renderLogTimelineInto(container, options = {}) {
+  if (!container) {
     return;
   }
 
-  const anchor = options.preserveScroll ? captureLogScrollAnchor() : null;
+  const preserveScroll = !!options.preserveScroll && container === eventLog;
+  const anchor = preserveScroll ? captureLogScrollAnchor() : null;
   if (!logTopItems.length) {
-    eventLog.innerHTML = "";
+    container.innerHTML = "";
     const empty = document.createElement("div");
     empty.className = "log-empty";
-    eventLog.appendChild(empty);
-    updateLogHeaderUi();
+    container.appendChild(empty);
+    if (options.updateHeader !== false) {
+      updateLogHeaderUi();
+    }
     return;
   }
 
   const categoryFilter = getCurrentLogCategoryFilter();
+  const shouldStickToBottom = container !== eventLog
+    && container.scrollHeight - container.scrollTop - container.clientHeight <= 4;
   const fragment = document.createDocumentFragment();
   let renderedLineCount = 0;
   for (const item of logTopItems) {
@@ -975,14 +1009,26 @@ function renderLogTimeline(options = {}) {
     const empty = document.createElement("div");
     empty.className = "log-empty";
     empty.textContent = "No logs match selected category.";
-    eventLog.replaceChildren(empty);
+    container.replaceChildren(empty);
   } else {
-    eventLog.replaceChildren(fragment);
+    container.replaceChildren(fragment);
   }
   if (anchor) {
     restoreLogScrollAnchor(anchor);
+  } else if (shouldStickToBottom) {
+    container.scrollTop = container.scrollHeight;
   }
-  updateLogHeaderUi();
+  if (options.updateHeader !== false) {
+    updateLogHeaderUi();
+  }
+}
+
+function renderLogTimeline(options = {}) {
+  renderLogTimelineInto(eventLog, options);
+}
+
+function renderUpdateLogMirror() {
+  renderLogTimelineInto(updateEventLog, { updateHeader: false });
 }
 
 function clearLogTimeline() {
@@ -1324,6 +1370,780 @@ async function callApi(method, ...args) {
     throw new Error("PyWebView API is unavailable.");
   }
   return window.pywebview.api[method](...args);
+}
+
+function formatUpdateTime(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return "";
+  }
+  try {
+    return new Date(numeric * 1000).toLocaleString();
+  } catch {
+    return "";
+  }
+}
+
+function getUpdateStatusLabel(status) {
+  const labels = {
+    not_scanned: "Not scanned",
+    scanning: "Scanning",
+    up_to_date: "Up to date",
+    outdated: "Outdated",
+    queued: "Queued",
+    downloading: "Downloading",
+    downloaded: "Downloaded",
+    applied: "Applied",
+    cannot_check: "Cannot check",
+    apply_failed: "Apply failed"
+  };
+  return labels[String(status || "")] || String(status || "");
+}
+
+function getSelectedUpdateTarget() {
+  return state.updateTargets.find((target) => String(target.id) === String(state.selectedUpdateTargetId)) || null;
+}
+
+function getSelectedUpdateModIds() {
+  return Array.from(state.selectedUpdateModIds).filter(Boolean);
+}
+
+function getOutdatedUpdateMods(target = getSelectedUpdateTarget()) {
+  if (!target) {
+    return [];
+  }
+  return (target.mods || [])
+    .filter((mod) => String(mod.mod_id || "").trim() && String(mod.status || "") === "outdated")
+    .map((mod) => ({ ...mod, target }));
+}
+
+function getUpdateTargetFormState() {
+  const appInput = updateGameInput?.value.trim() || "";
+  const folder = updateFolderInput?.value.trim() || "";
+  return {
+    appInput,
+    folder,
+    hasAppInput: !!appInput,
+    hasFolder: !!folder
+  };
+}
+
+function setControlDisabledState(control, disabled, title) {
+  if (!control) {
+    return;
+  }
+  control.disabled = !!disabled;
+  control.title = title || "";
+}
+
+function syncUpdateTargetFormControls() {
+  const formState = getUpdateTargetFormState();
+  setControlDisabledState(
+    updateChooseFolderBtn,
+    !formState.hasAppInput,
+    formState.hasAppInput
+      ? "Choose the local mods folder for this game."
+      : "Enter or select a game/AppID before choosing a folder."
+  );
+  setControlDisabledState(
+    updateSaveTargetBtn,
+    !formState.hasAppInput || !formState.hasFolder,
+    !formState.hasAppInput
+      ? "Enter or select a game/AppID first."
+      : !formState.hasFolder
+        ? "Choose or enter the local mods folder first."
+        : "Save this game and mods folder as an update target."
+  );
+}
+
+function syncUpdateActionButtons() {
+  const hasTarget = !!getSelectedUpdateTarget();
+  const hasOutdated = getOutdatedUpdateMods().length > 0;
+  const hasScannedMods = hasTarget && (getSelectedUpdateTarget().mods || [])
+    .some((mod) => String(mod.mod_id || "").trim());
+  const addQueueTitle = hasOutdated
+    ? "Add outdated mods from the selected target to Queue."
+    : hasTarget
+      ? "Scan first, then use this when outdated mods are found."
+      : "Save or select an update target first.";
+  setControlDisabledState(updateAddQueueBtn, !hasOutdated, addQueueTitle);
+  setControlDisabledState(updateHeaderAddQueueBtn, !hasOutdated, addQueueTitle);
+  setControlDisabledState(
+    updateScanAllBtn,
+    !hasTarget,
+    hasTarget ? "Scan the selected target for local mods and update status." : "Save or select an update target first."
+  );
+  setControlDisabledState(
+    updateNowBtn,
+    !hasOutdated,
+    hasOutdated ? "Queue and start downloading outdated mods." : addQueueTitle
+  );
+  setControlDisabledState(
+    updateExposeListBtn,
+    !hasScannedMods,
+    hasScannedMods
+      ? "Expose scanned mods to a queue import file, then import it from Queue tab."
+      : hasTarget
+        ? "Scan this target before exposing its mod list."
+        : "Save or select an update target first."
+  );
+  setControlDisabledState(
+    updateRemoveTargetBtn,
+    !hasTarget,
+    hasTarget ? "Remove saved update targets. Local files are not deleted." : "Save or select an update target first."
+  );
+  syncUpdateTargetFormControls();
+}
+
+function countUpdateModsByStatus(targets, status) {
+  return (targets || []).reduce((total, target) => {
+    return total + (target.mods || []).filter((mod) => mod.status === status).length;
+  }, 0);
+}
+
+function renderUpdateTab() {
+  if (!updateBody) {
+    return;
+  }
+  const targets = Array.isArray(state.updateTargets) ? state.updateTargets : [];
+  const filter = state.updateStatusFilter || "all";
+  const totalMods = targets.reduce((sum, target) => sum + (target.mods || []).length, 0);
+  const outdated = countUpdateModsByStatus(targets, "outdated");
+  const downloaded = countUpdateModsByStatus(targets, "downloaded");
+  const selectedTarget = getSelectedUpdateTarget() || targets[0] || null;
+  if (selectedTarget && !state.selectedUpdateTargetId) {
+    state.selectedUpdateTargetId = selectedTarget.id || "";
+  }
+  if (updateSummary) {
+    updateSummary.textContent = targets.length
+      ? `${targets.length} targets / ${totalMods} mods / ${outdated} outdated / ${downloaded} downloaded`
+      : "No update targets";
+  }
+  if (updateTargetSelect) {
+    const currentValue = selectedTarget?.id || "";
+    updateTargetSelect.innerHTML = targets.length
+      ? targets.map((target) => {
+          const label = `${target.game_name || `AppID ${target.app_id}`} / ${target.app_id || "-"}`;
+          return `<option value="${escapeHtml(String(target.id || ""))}" ${target.id === currentValue ? "selected" : ""}>${escapeHtml(label)}</option>`;
+        }).join("")
+      : '<option value="">No update targets</option>';
+    updateTargetSelect.disabled = !targets.length;
+    updateTargetSelect.value = currentValue;
+  }
+  if (updateTargetHeading) {
+    updateTargetHeading.textContent = selectedTarget
+      ? `${selectedTarget.game_name || `AppID ${selectedTarget.app_id}`} / ${selectedTarget.app_id || "-"}`
+      : "Game / AppID";
+  }
+  if (updateTreeSummary) {
+    const mods = Array.isArray(selectedTarget?.mods) ? selectedTarget.mods : [];
+    const selectedOutdated = mods.filter((mod) => mod.status === "outdated").length;
+    updateTreeSummary.textContent = selectedTarget
+      ? `${selectedTarget.mods_folder || ""} / ${mods.length} mods / ${selectedOutdated} outdated`
+      : "Save a game mods folder to begin";
+  }
+
+  updateBody.textContent = "";
+  const fragment = document.createDocumentFragment();
+  if (!selectedTarget) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 3;
+    cell.className = "empty-cell";
+    cell.textContent = "No update targets saved.";
+    row.appendChild(cell);
+    fragment.appendChild(row);
+    updateBody.appendChild(fragment);
+    syncUpdateActionButtons();
+    return;
+  }
+
+  const target = selectedTarget;
+  const mods = Array.isArray(target.mods) ? target.mods : [];
+  const visibleMods = filter === "all" ? mods : mods.filter((mod) => String(mod.status) === filter);
+
+  if (!visibleMods.length) {
+    const emptyRow = document.createElement("tr");
+    emptyRow.className = "update-mod-row update-empty-row";
+    const emptyCell = document.createElement("td");
+    emptyCell.colSpan = 3;
+    emptyCell.className = "empty-cell";
+    emptyCell.textContent = mods.length ? "No mods match this filter." : "Scan support will be added later.";
+    emptyRow.appendChild(emptyCell);
+    fragment.appendChild(emptyRow);
+    updateBody.appendChild(fragment);
+    syncUpdateActionButtons();
+    return;
+  }
+
+  visibleMods.forEach((mod) => {
+    const modId = String(mod.mod_id || "");
+    const rowKey = `${target.id}|${modId}`;
+    const row = document.createElement("tr");
+    row.className = `update-mod-row status-${String(mod.status || "").replaceAll("_", "-")}`;
+    row.dataset.targetId = target.id;
+    row.dataset.modId = modId;
+    row.classList.toggle("selected", state.selectedUpdateModIds.has(rowKey));
+
+    const nameCell = document.createElement("td");
+    const displayName = String(mod.name || mod.mod_name || mod.folder_name || "Unknown");
+    nameCell.title = String(mod.folder_path || mod.folder_name || displayName);
+    nameCell.innerHTML = `
+      <div class="update-mod-name">${escapeHtml(displayName)}</div>
+    `;
+    const idCell = document.createElement("td");
+    idCell.textContent = modId || "-";
+    const statusCell = document.createElement("td");
+    statusCell.textContent = getUpdateStatusLabel(mod.status);
+    if (mod.error) {
+      statusCell.title = mod.error;
+    }
+    row.append(nameCell, idCell, statusCell);
+    fragment.appendChild(row);
+  });
+  updateBody.appendChild(fragment);
+  syncUpdateActionButtons();
+}
+
+async function refreshUpdateTargets({ forceRender = true } = {}) {
+  try {
+    const result = await callApi("get_update_targets");
+    if (!result?.success) {
+      addLog(result?.error || "Failed to load update targets.", "bad");
+      return false;
+    }
+    state.updateTargets = Array.isArray(result.targets) ? result.targets : [];
+    const hasSelected = state.updateTargets.some((target) => target.id === state.selectedUpdateTargetId);
+    if (!hasSelected) {
+      state.selectedUpdateTargetId = state.updateTargets[0]?.id || "";
+      state.selectedUpdateModIds.clear();
+    }
+    if (forceRender) {
+      renderUpdateTab();
+    }
+    return true;
+  } catch (error) {
+    addLog(error?.message || "Update targets are only available from desktop app.", "bad");
+    return false;
+  }
+}
+
+function applyUpdateTargetsFromResult(result) {
+  if (Array.isArray(result?.targets)) {
+    state.updateTargets = result.targets;
+    renderUpdateTab();
+  }
+}
+
+async function saveUpdateTargetFromForm(replaceExisting = false) {
+  const { appInput, folder, hasAppInput, hasFolder } = getUpdateTargetFormState();
+  if (!hasAppInput || !hasFolder) {
+    syncUpdateTargetFormControls();
+    addLog(!hasAppInput ? "Enter a game/AppID first." : "Choose a game mods folder first.", "bad");
+    return false;
+  }
+  const result = await callApi("save_update_target", appInput, folder, replaceExisting);
+  if (result?.conflict && !replaceExisting) {
+    const confirmed = await showConfirmDialog({
+      title: "Replace Update Target",
+      message: `${result.existing_target?.game_name || "This game"} already has a saved mods folder. Replace it?`,
+      okLabel: "Replace",
+      cancelLabel: "Cancel"
+    });
+    if (!confirmed) {
+      return false;
+    }
+    return saveUpdateTargetFromForm(true);
+  }
+  if (!result?.success) {
+    addLog(result?.error || "Failed to save update target.", "bad");
+    return false;
+  }
+  applyUpdateTargetsFromResult(result);
+  state.selectedUpdateTargetId = result.target?.id || state.selectedUpdateTargetId;
+  state.selectedUpdateModIds.clear();
+  renderUpdateTab();
+  addLog("Update target saved.", "good");
+  return true;
+}
+
+async function chooseUpdateFolderInto(input) {
+  if (input === updateFolderInput && !getUpdateTargetFormState().hasAppInput) {
+    syncUpdateTargetFormControls();
+    addLog("Enter or select a game/AppID before choosing a folder.", "bad");
+    return "";
+  }
+  const result = await callApi("choose_update_target_folder");
+  if (result?.cancelled) {
+    return "";
+  }
+  if (!result?.success || !result.path) {
+    addLog(result?.error || "Folder picker failed.", "bad");
+    return "";
+  }
+  if (input) {
+    input.value = result.path;
+  }
+  if (input === updateFolderInput) {
+    syncUpdateTargetFormControls();
+  }
+  return result.path;
+}
+
+async function scanSelectedUpdateTarget() {
+  const target = getSelectedUpdateTarget();
+  if (!target) {
+    addLog("Select an update target first.", "bad");
+    return;
+  }
+  const result = await callApi("scan_update_target", target.id);
+  applyUpdateTargetsFromResult(result);
+  if (!result?.success) {
+    addLog(result?.error || "Scan failed.", "bad");
+    return;
+  }
+  addLog(`Scanned ${result.count || 0} local mod folders.`, "good");
+}
+
+async function scanAllUpdateTargets() {
+  const result = await callApi("scan_update_targets");
+  applyUpdateTargetsFromResult(result);
+  if (!result?.success) {
+    addLog(result?.error || "Some update targets failed to scan.", "bad");
+    return;
+  }
+  addLog("All update targets scanned.", "good");
+}
+
+function buildUpdateModChecklist(mods) {
+  return `
+    <div class="update-modal-list">
+      ${mods.map((mod) => `
+        <label class="modal-checkbox-row update-modal-row">
+          <input type="checkbox" name="update-mod-id" value="${escapeHtml(String(mod.mod_id || ""))}" checked>
+          <span>
+            <strong>${escapeHtml(mod.folder_name || mod.name || `Mod ${mod.mod_id}`)}</strong>
+            <small>${escapeHtml(String(mod.mod_id || ""))} / ${escapeHtml(getUpdateStatusLabel(mod.status))}</small>
+          </span>
+        </label>
+      `).join("")}
+    </div>
+  `;
+}
+
+async function selectOutdatedUpdateModsForQueue() {
+  const target = getSelectedUpdateTarget();
+  const outdated = getOutdatedUpdateMods(target);
+  if (!target || !outdated.length) {
+    addLog("No outdated update mods to add.", "bad");
+    return [];
+  }
+  const selected = await showFormModal({
+    title: "Add Outdated Mods",
+    message: `${target.game_name || target.app_id} / ${outdated.length} outdated mods`,
+    html: buildUpdateModChecklist(outdated),
+    okLabel: "Add Selected",
+    cancelLabel: "Cancel",
+    onSubmit: (form) => Array.from(form.querySelectorAll('input[name="update-mod-id"]:checked'))
+      .map((input) => String(input.value || "").trim())
+      .filter(Boolean)
+  });
+  return Array.isArray(selected) ? selected : [];
+}
+
+async function addOutdatedUpdateModsToQueue({ prompt = false } = {}) {
+  const target = getSelectedUpdateTarget();
+  if (!target) {
+    addLog("Select an update target first.", "bad");
+    return false;
+  }
+  const modIds = prompt
+    ? await selectOutdatedUpdateModsForQueue()
+    : getOutdatedUpdateMods(target).map((mod) => String(mod.mod_id || "").trim()).filter(Boolean);
+  if (!modIds.length) {
+    addLog("No outdated update mods selected.", "bad");
+    return false;
+  }
+  const result = await callApi("add_update_mods_to_queue", target.id, modIds);
+  applyUpdateTargetsFromResult(result);
+  if (!result?.success) {
+    addLog(result?.error || "Failed to add outdated update mods to queue.", "bad");
+    return false;
+  }
+  addLog(`Added ${result.added || modIds.length} outdated update mods to queue.`, "good");
+  await refreshQueue({ forceReload: true });
+  await refreshUpdateTargets();
+  return true;
+}
+
+async function updateOutdatedModsNow() {
+  const target = getSelectedUpdateTarget();
+  const outdated = getOutdatedUpdateMods(target);
+  if (!target || !outdated.length) {
+    addLog("No outdated update mods to update.", "bad");
+    return;
+  }
+  const confirmed = await showConfirmDialog({
+    title: "Update Outdated Mods",
+    message: `Queue and start downloading ${outdated.length} outdated mods for ${target.game_name || target.app_id}?`,
+    okLabel: "Update Now",
+    cancelLabel: "Cancel"
+  });
+  if (!confirmed) {
+    return;
+  }
+  const modIds = outdated.map((mod) => String(mod.mod_id || "").trim()).filter(Boolean);
+  const result = await callApi("update_mods_now", target.id, modIds);
+  applyUpdateTargetsFromResult(result);
+  if (!result?.success) {
+    addLog(result?.error || "Update-now failed.", "bad");
+    return;
+  }
+  state.isDownloading = true;
+  syncStartButton();
+  addLog(`Started update download for ${result.added || modIds.length} outdated mods.`, "good");
+  await refreshQueue({ forceReload: true });
+  await refreshUpdateTargets();
+}
+
+async function chooseUpdateTargetsToRemove() {
+  const targets = Array.isArray(state.updateTargets) ? state.updateTargets : [];
+  if (!targets.length) {
+    addLog("No update targets to remove.", "bad");
+    return [];
+  }
+  const selected = await showFormModal({
+    title: "Remove Update Targets",
+    message: "Select game/AppID targets to remove. Local files are not deleted.",
+    html: `
+      <div class="update-modal-list">
+        ${targets.map((target) => `
+          <label class="modal-checkbox-row update-modal-row">
+            <input type="checkbox" name="update-target-id" value="${escapeHtml(String(target.id || ""))}" ${target.id === state.selectedUpdateTargetId ? "checked" : ""}>
+            <span>
+              <strong>${escapeHtml(target.game_name || `AppID ${target.app_id}`)}</strong>
+              <small>${escapeHtml(String(target.app_id || ""))} / ${escapeHtml(target.mods_folder || "")}</small>
+            </span>
+          </label>
+        `).join("")}
+      </div>
+    `,
+    okLabel: "Remove Selected",
+    cancelLabel: "Cancel",
+    onSubmit: (form) => Array.from(form.querySelectorAll('input[name="update-target-id"]:checked'))
+      .map((input) => String(input.value || "").trim())
+      .filter(Boolean)
+  });
+  return Array.isArray(selected) ? selected : [];
+}
+
+async function removeSelectedUpdateTargets() {
+  const targetIds = await chooseUpdateTargetsToRemove();
+  if (!targetIds.length) {
+    return;
+  }
+  let failed = 0;
+  for (const targetId of targetIds) {
+    const result = await callApi("remove_update_target", targetId);
+    applyUpdateTargetsFromResult(result);
+    if (!result?.success) {
+      failed += 1;
+      addLog(result?.error || "Failed to remove update target.", "bad");
+    }
+  }
+  state.selectedUpdateTargetId = state.updateTargets[0]?.id || "";
+  state.selectedUpdateModIds.clear();
+  await refreshUpdateTargets();
+  addLog(`Removed ${targetIds.length - failed} update targets.`, failed ? "bad" : "good");
+}
+
+function getExposeableUpdateMods(target = getSelectedUpdateTarget()) {
+  if (!target) {
+    return [];
+  }
+  return (target.mods || []).filter((mod) => String(mod.mod_id || "").trim());
+}
+
+async function maybeShowExposeUpdateHint() {
+  const key = "streamline.updateExposeListHintSeen";
+  try {
+    if (window.localStorage?.getItem(key) === "1") {
+      return true;
+    }
+  } catch (_error) {
+    return true;
+  }
+  const accepted = await showConfirmDialog({
+    title: "Expose List Mod",
+    message: "Expose sẽ tạo file queue import từ các game/AppID đã scan. Sau khi tạo xong, chuyển sang tab Queue và nhấn nút Import Queue ở hàng nút thứ hai của Queue để nhập file đó.",
+    okLabel: "Continue",
+    cancelLabel: "Cancel"
+  });
+  if (accepted) {
+    try {
+      window.localStorage?.setItem(key, "1");
+    } catch (_error) {
+      // localStorage can be unavailable in restricted shells.
+    }
+  }
+  return accepted;
+}
+
+async function exposeSelectedUpdateMods() {
+  const targets = Array.isArray(state.updateTargets) ? state.updateTargets : [];
+  if (!targets.length) {
+    addLog("No update targets to expose.", "bad");
+    return;
+  }
+  const exposeableTargets = targets.filter((target) => getExposeableUpdateMods(target).length > 0);
+  if (!exposeableTargets.length) {
+    addLog("Scan update targets before exposing mods.", "bad");
+    return;
+  }
+  const canContinue = await maybeShowExposeUpdateHint();
+  if (!canContinue) {
+    return;
+  }
+
+  const selected = await showFormModal({
+    title: "Expose List Mod",
+    message: "Select game/AppID targets and choose the queue import file destination.",
+    html: `
+      <div class="update-expose-path-row">
+        <input class="control form-control" id="update-expose-path" type="text" placeholder="Destination file, e.g. C:\\\\Temp\\\\update_mods.txt">
+        <button class="control action-btn" id="update-expose-browse-btn" type="button">Browse</button>
+      </div>
+      <div class="update-modal-list">
+        ${exposeableTargets.map((target) => {
+          const targetId = String(target.id || "");
+          const modCount = getExposeableUpdateMods(target).length;
+          const checked = target.id === state.selectedUpdateTargetId ? "checked" : "";
+          return `
+            <label class="modal-checkbox-row update-modal-row">
+              <input type="checkbox" name="update-expose-target-id" value="${escapeHtml(targetId)}" ${checked}>
+              <span>
+                <strong>${escapeHtml(target.game_name || `AppID ${target.app_id}`)}</strong>
+                <small>${escapeHtml(String(target.app_id || ""))} / ${modCount} scanned mods</small>
+              </span>
+            </label>
+          `;
+        }).join("")}
+      </div>
+    `,
+    okLabel: "Expose",
+    cancelLabel: "Cancel",
+    onMount: (form) => {
+      const pathInput = form.querySelector("#update-expose-path");
+      const browseBtn = form.querySelector("#update-expose-browse-btn");
+      browseBtn?.addEventListener("click", async () => {
+        const browse = await callApi("browse_export_queue_file");
+        if (browse?.success && pathInput) {
+          pathInput.value = browse.path || "";
+        } else if (!browse?.cancelled) {
+          addLog(browse?.error || "Destination selection failed.", "bad");
+        }
+      });
+    },
+    onSubmit: (form) => {
+      const filePath = String(form.querySelector("#update-expose-path")?.value || "").trim();
+      const targetIds = Array.from(form.querySelectorAll('input[name="update-expose-target-id"]:checked'))
+        .map((input) => String(input.value || "").trim())
+        .filter(Boolean);
+      if (!filePath) {
+        addLog("Destination file is required.", "bad");
+        return false;
+      }
+      if (!targetIds.length) {
+        addLog("Select at least one game/AppID target to expose.", "bad");
+        return false;
+      }
+      return { filePath, targetIds };
+    }
+  });
+  if (!selected) {
+    return;
+  }
+
+  const result = await callApi(
+    "expose_update_mods",
+    selected.targetIds,
+    selected.filePath,
+    providerSelect?.value || "Default"
+  );
+  if (!result?.success) {
+    addLog(result?.error || "Expose list mod failed.", "bad");
+    return;
+  }
+  addLog(`Exposed ${result.count || 0} mods from ${result.targets || selected.targetIds.length} targets to ${result.path}.`, "good");
+  setActiveAppTab("queue");
+}
+
+async function getQueuedAppIdsForDestinationFlow() {
+  let queueItems = state.queue || [];
+  try {
+    const response = await callApi("get_queue");
+    if (Array.isArray(response)) {
+      queueItems = response.map(normalizeQueueItem);
+      state.queue = queueItems;
+    }
+  } catch {
+    queueItems = state.queue || [];
+  }
+  const queued = queueItems.filter((mod) => String(mod.status) === "Queued");
+  const appIds = new Set(queued.map((mod) => String(mod.app_id || "").trim()).filter(Boolean));
+  return { queued, appIds };
+}
+
+async function startDownloadWithOptionalDestination() {
+  const { appIds } = await getQueuedAppIdsForDestinationFlow();
+  if (appIds.size !== 1) {
+    const request = callApi("start_download");
+    void pollEvents();
+    const result = await request;
+    void pollEvents();
+    return result;
+  }
+
+  const chooseFolder = await showConfirmDialog({
+    title: "Download Destination",
+    message: "Choose a game mods folder for this single-AppID batch?",
+    okLabel: "Choose Folder",
+    cancelLabel: "Use Default"
+  });
+  if (!chooseFolder) {
+    const request = callApi("start_download");
+    void pollEvents();
+    const result = await request;
+    void pollEvents();
+    return result;
+  }
+
+  const folder = await chooseUpdateFolderInto(null);
+  if (!folder) {
+    return { success: false, cancelled: true };
+  }
+  const destinationChoice = await showFormModal({
+    title: "Single-AppID Destination",
+    message: folder,
+    html: `
+      <label class="modal-checkbox-row">
+        <input id="destination-save-update-target" type="checkbox" checked>
+        <span>Use this folder for future updates for this game</span>
+      </label>
+    `,
+    okLabel: "Start Download",
+    cancelLabel: "Cancel",
+    onSubmit: (form) => ({
+      saveTarget: !!form.querySelector("#destination-save-update-target")?.checked
+    })
+  });
+  if (!destinationChoice) {
+    return { success: false, cancelled: true };
+  }
+  const saveTarget = !!destinationChoice.saveTarget;
+  const request = callApi("start_download_with_destination", {
+    mods_folder: folder,
+    save_update_target: saveTarget
+  });
+  void pollEvents();
+  const result = await request;
+  void pollEvents();
+  if (result?.conflict) {
+    const replace = await showConfirmDialog({
+      title: "Replace Update Target",
+      message: "This game already has a saved mods folder. Replace it with the selected folder?",
+      okLabel: "Replace",
+      cancelLabel: "Cancel"
+    });
+    if (!replace) {
+      return result;
+    }
+    const retry = await callApi("start_download_with_destination", {
+      mods_folder: folder,
+      save_update_target: saveTarget,
+      replace_existing: true
+    });
+    void pollEvents();
+    return retry;
+  }
+  return result;
+}
+
+function wireUpdateTab() {
+  updateTargetForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await saveUpdateTargetFromForm(false);
+  });
+  updateGameInput?.addEventListener("input", syncUpdateTargetFormControls);
+  updateFolderInput?.addEventListener("input", syncUpdateTargetFormControls);
+  syncUpdateTargetFormControls();
+  updateChooseFolderBtn?.addEventListener("click", async () => {
+    await chooseUpdateFolderInto(updateFolderInput);
+  });
+  updateScanAllBtn?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void scanSelectedUpdateTarget();
+  });
+  updateHeaderAddQueueBtn?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void addOutdatedUpdateModsToQueue({ prompt: false });
+  });
+  updateStatusFilter?.addEventListener("change", () => {
+    state.updateStatusFilter = updateStatusFilter.value || "all";
+    renderUpdateTab();
+  });
+  updateTargetSelect?.addEventListener("change", () => {
+    state.selectedUpdateTargetId = updateTargetSelect.value || "";
+    state.selectedUpdateModIds.clear();
+    renderUpdateTab();
+  });
+  updateTreeToggle?.addEventListener("click", () => {
+    const expanded = !updateTreeSection?.classList.contains("expanded");
+    updateTreeSection?.classList.toggle("expanded", expanded);
+    updateTreeToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+  });
+  updateTreeToggle?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    updateTreeToggle.click();
+  });
+  updateBody?.addEventListener("click", async (event) => {
+    const targetRow = event.target.closest(".update-target-row");
+    if (targetRow) {
+      state.selectedUpdateTargetId = targetRow.dataset.targetId || "";
+      state.selectedUpdateModIds.clear();
+      renderUpdateTab();
+      if (event.detail === 2) {
+        await scanSelectedUpdateTarget();
+      }
+      return;
+    }
+    const modRow = event.target.closest(".update-mod-row[data-mod-id]");
+    if (!modRow) {
+      return;
+    }
+    const targetId = modRow.dataset.targetId || "";
+    const modId = modRow.dataset.modId || "";
+    const key = `${targetId}|${modId}`;
+    state.selectedUpdateTargetId = targetId;
+    if (event.ctrlKey || event.metaKey) {
+      if (state.selectedUpdateModIds.has(key)) {
+        state.selectedUpdateModIds.delete(key);
+      } else {
+        state.selectedUpdateModIds.add(key);
+      }
+    } else {
+      state.selectedUpdateModIds.clear();
+      state.selectedUpdateModIds.add(key);
+    }
+    renderUpdateTab();
+  });
+  updateAddQueueBtn?.addEventListener("click", () => addOutdatedUpdateModsToQueue({ prompt: true }));
+  updateNowBtn?.addEventListener("click", updateOutdatedModsNow);
+  updateExposeListBtn?.addEventListener("click", exposeSelectedUpdateMods);
+  updateRemoveTargetBtn?.addEventListener("click", removeSelectedUpdateTargets);
 }
 
 function beginAppShutdown() {
@@ -2849,6 +3669,11 @@ function getWorkshopModUrl(modId) {
   return id ? `https://steamcommunity.com/sharedfiles/filedetails/?id=${encodeURIComponent(id)}` : "";
 }
 
+function getWorkshopAppUrl(appId) {
+  const id = String(appId || "").trim();
+  return /^\d+$/.test(id) ? `https://steamcommunity.com/app/${id}/workshop/` : "";
+}
+
 function normalizeBrowseOpenTarget(value) {
   const input = String(value || "").trim();
   if (!input) {
@@ -2862,7 +3687,7 @@ function normalizeBrowseOpenTarget(value) {
     return { url: `https://${input}`, appId };
   }
   if (/^\d+$/.test(input)) {
-    return { url: `https://steamcommunity.com/app/${input}/workshop/`, appId: input };
+    return { url: getWorkshopAppUrl(input), appId: input };
   }
   return { url: getScopedWorkshopSearchUrl(input), appId: browseWorkshopScopeAppId };
 }
@@ -3096,6 +3921,7 @@ async function openModInBrowse(mod) {
   }
   if (normalized.app_id) {
     setBrowseWorkshopScope(normalized.app_id);
+    browseBackFallbackAppId = normalized.app_id;
   }
   setBrowseAllowedMods([normalized]);
   if (browseUrlInput) {
@@ -3401,6 +4227,11 @@ async function selectGameSearchResult(input, game) {
     await openBrowseTarget(appId);
     return;
   }
+  if (input === updateGameInput) {
+    syncUpdateTargetFormControls();
+    addLog(`Selected update target game ${gameName || `AppID ${appId}`} (${appId}).`, "info");
+    return;
+  }
   showModListSection();
   renderModListResults(`Searching ${gameName || `AppID ${appId}`} Workshop mods...`);
   await searchWorkshopModsForInput(appId);
@@ -3408,7 +4239,8 @@ async function selectGameSearchResult(input, game) {
 
 async function searchGamesForInput(input) {
   const query = String(input?.value || "").trim();
-  if (!input || !shouldSearchGamesForInput(query)) {
+  const allowAppIdLookup = input === updateGameInput;
+  if (!input || (!shouldSearchGamesForInput(query) && !(allowAppIdLookup && /^\d+$/.test(query)))) {
     hideGameSearchPopup();
     return;
   }
@@ -3449,7 +4281,9 @@ function wireGameSearchInput(input) {
     scheduleGameSearch(input);
   });
   input.addEventListener("focus", () => {
-    if (shouldSearchGamesForInput(input.value)) {
+    const query = String(input.value || "").trim();
+    const allowAppIdLookup = input === updateGameInput && /^\d+$/.test(query);
+    if (shouldSearchGamesForInput(query) || allowAppIdLookup) {
       activeGameSearchInput = input;
       scheduleGameSearch(input);
     }
@@ -5195,6 +6029,7 @@ async function useBootstrapData(data) {
   state.config = config;
   state.version = String(data?.version || "");
   state.queue = (data?.queue || []).map(normalizeQueueItem);
+  state.updateTargets = Array.isArray(data?.update_targets) ? data.update_targets : [];
   const stats = data?.queue_stats;
   if (stats && typeof stats === "object") {
     state.queueStats = {
@@ -5228,6 +6063,7 @@ async function useBootstrapData(data) {
     addLog(data.warning, "bad");
   }
   renderQueue();
+  renderUpdateTab();
 
   const showTutorialOnStartup = config.show_tutorial_on_startup !== false;
   const tutorialWasShownBefore = !!config.tutorial_shown;
@@ -6624,6 +7460,10 @@ async function openAppIdsManager() {
   const info = await callApi("get_appids_info");
   const currentCount = Number(info?.count ?? 0);
   const lastUpdated = String(info?.last_updated || "N/A");
+  const sourceLabel = String(info?.source_label || info?.source || "Unknown");
+  const activeSource = String(info?.active_source || "none").replaceAll("_", " ");
+  const runtimeCount = Number(info?.runtime_cache?.count ?? 0);
+  const bundledCount = Number(info?.bundled_seed?.count ?? 0);
   let useHeadlessMode = true;
   let footerHeadlessSwitchEl = null;
   const TYPE_OPTIONS = [
@@ -6632,13 +7472,15 @@ async function openAppIdsManager() {
     { key: "tool", label: "Tool", value: "Tool", selected: false }
   ];
   const PROGRESS_STEPS = [
-    { key: "connect", label: "Connect to source", runningText: "Connecting to SteamDB..." },
-    { key: "fetch", label: "Fetch entries", runningText: "Fetching AppID rows..." },
+    { key: "connect", label: "Connect to Workshop source", runningText: "Connecting to SteamDB Workshop-capable source..." },
+    { key: "fetch", label: "Fetch entries", runningText: "Fetching Workshop-capable AppIDs..." },
     { key: "parse", label: "Parse payload", runningText: "Parsing AppIDs..." },
-    { key: "write", label: "Write AppIDs file", runningText: "Writing AppIDs.txt..." },
+    { key: "write", label: "Write runtime cache", runningText: "Writing runtime AppIDs cache..." },
     { key: "reload", label: "Reload in app", runningText: "Reloading AppIDs..." }
   ];
   const formattedCount = Number.isFinite(currentCount) ? currentCount.toLocaleString() : "0";
+  const formattedRuntimeCount = Number.isFinite(runtimeCount) ? runtimeCount.toLocaleString() : "0";
+  const formattedBundledCount = Number.isFinite(bundledCount) ? bundledCount.toLocaleString() : "0";
 
   const html = `
     <div class="appids-modal-shell" data-appids-state="idle">
@@ -6652,9 +7494,18 @@ async function openAppIdsManager() {
             <span class="appids-stat-label">Last Updated</span>
             <span class="appids-stat-value appids-stat-subtle">${escapeHtml(lastUpdated)}</span>
           </div>
+          <div class="appids-stat-card">
+            <span class="appids-stat-label">Active Source</span>
+            <span class="appids-stat-value appids-stat-subtle">${escapeHtml(sourceLabel)}</span>
+          </div>
+          <div class="appids-stat-card">
+            <span class="appids-stat-label">Cache / Seed</span>
+            <span class="appids-stat-value appids-stat-subtle">${formattedRuntimeCount} / ${formattedBundledCount}</span>
+          </div>
         </div>
         <div class="appids-type-section">
-          <h4 class="appids-section-title">Select Types</h4>
+          <h4 class="appids-section-title">Select Workshop App Types</h4>
+          <p class="appids-section-note">Updates use Workshop-capable sources only. Steam Store search can still add missing Workshop games when they are found.</p>
           <div class="appids-type-grid">
             ${TYPE_OPTIONS.map((type) => `
               <button
@@ -6764,7 +7615,7 @@ async function openAppIdsManager() {
   try {
     await showFormModal({
       title: "Update AppIDs",
-      message: "Refresh local AppIDs from SteamDB.",
+      message: "Refresh the runtime AppIDs cache with Workshop-capable apps only. Bundled seed data is kept unchanged.",
       html,
       okLabel: "Update",
       onMount: (root) => {
@@ -6859,8 +7710,10 @@ async function openAppIdsManager() {
             }
             setProgressBadge(root, "success", "Done");
             setProgressBar(root, "success", 100);
-            setProgressText(root, `AppIDs updated successfully (${result.count} entries).`);
-            addLog(`AppIDs updated (${result.count} entries).`, "good");
+            const resultSource = result.source_label || result.source || "runtime cache";
+            setProgressText(root, `Workshop-only runtime cache updated from ${resultSource} (${result.count} entries).`);
+            addLog(`Workshop-capable AppIDs runtime cache updated from ${resultSource} (${result.count} entries).`, "good");
+            refreshAppLayoutAfterRender();
             return true;
           }
           const errorText = String(result?.error || "Failed to update AppIDs.");
@@ -7452,6 +8305,7 @@ function wireFilterControls() {
 function wireGameSearch() {
   wireGameSearchInput(itemUrlInput);
   wireGameSearchInput(browseUrlInput);
+  wireGameSearchInput(updateGameInput);
   document.addEventListener("click", (event) => {
     if (!event.target.closest(".game-search-popup") && event.target !== activeGameSearchInput) {
       hideGameSearchPopup();
@@ -7517,6 +8371,7 @@ function wireBrowseTab() {
       browseUrlInput.value = "";
     }
     browseHasOpenedTarget = false;
+    browseBackFallbackAppId = "";
     setBrowseWorkshopScope("");
     hideBrowseNativeBrowser();
     setBrowseStatus("Enter a Workshop URL or AppID to browse.");
@@ -7524,11 +8379,30 @@ function wireBrowseTab() {
   });
 
   browseBackBtn?.addEventListener("click", async () => {
+    if (browseBackFallbackAppId) {
+      const appId = browseBackFallbackAppId;
+      browseBackFallbackAppId = "";
+      if (browseUrlInput) {
+        browseUrlInput.value = getWorkshopAppUrl(appId);
+      }
+      await openBrowseTarget(appId);
+      void updateBrowseAddLockState();
+      return;
+    }
     const result = await window.streamlineElectron?.browse?.back?.();
     if (!result?.success) {
+      if (browseWorkshopScopeAppId) {
+        if (browseUrlInput) {
+          browseUrlInput.value = getWorkshopAppUrl(browseWorkshopScopeAppId);
+        }
+        await openBrowseTarget(browseWorkshopScopeAppId);
+        void updateBrowseAddLockState();
+        return;
+      }
       setBrowseStatus(result?.error || "No previous page.", "bad");
       return;
     }
+    browseBackFallbackAppId = "";
     void updateBrowseAddLockState();
   });
 
@@ -7797,10 +8671,16 @@ async function handleEvent(event) {
 
   if (type === "queue") {
     scheduleQueueRefresh(true);
+    if (state.activeAppTab === "update") {
+      void refreshUpdateTargets();
+    }
     return;
   }
   if (type === "queue_status") {
     applyQueueStatusEvent(payload);
+    if (state.activeAppTab === "update") {
+      void refreshUpdateTargets();
+    }
     return;
   }
 
@@ -7825,6 +8705,9 @@ async function handleEvent(event) {
       });
     }
     syncStartButton();
+    if (state.activeAppTab === "update" && ["finished", "canceled", "error"].includes(String(status))) {
+      void refreshUpdateTargets();
+    }
     return;
   }
 
@@ -7914,6 +8797,27 @@ function revealAppWindow() {
   window.requestAnimationFrame(() => {
     document.body.style.opacity = "1";
   });
+}
+
+function refreshAppLayoutAfterRender() {
+  const run = () => {
+    initAllAnimatedSelects(document);
+    applyQueueColumnWidths();
+    renderQueueViewport(true);
+    renderLogTimeline({ preserveScroll: true });
+    renderUpdateLogMirror();
+    syncBrowseWebviewSize();
+    if (state.activeAppTab === "browse") {
+      showBrowseNativeBrowser();
+    }
+    window.dispatchEvent(new Event("resize"));
+  };
+
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(run);
+  });
+  window.setTimeout(run, 180);
+  window.setTimeout(run, 520);
 }
 
 function beginWindowResize(mode, cursorClass) {
@@ -8044,6 +8948,7 @@ async function init() {
   }
   started = true;
   renderLogTimeline();
+  renderUpdateLogMirror();
   initAllAnimatedSelects(document);
   applyWorkshopHelpTooltip();
   updateQueueStatisticsTooltip();
@@ -8069,6 +8974,7 @@ async function init() {
   await wireControlButtons();
   wireFilterControls();
   wireBrowseTab();
+  wireUpdateTab();
   wireGameSearch();
 
   try {
@@ -8082,6 +8988,7 @@ async function init() {
     applyModalTextColor("");
     state.apiAvailable = false;
     addLog(`Running without PyWebView bridge: ${error.message}`, "bad");
+    renderUpdateTab();
   }
   emitStartupLogToneTests();
 
@@ -8162,10 +9069,10 @@ async function init() {
         }
         return;
       }
-      const request = callApi("start_download");
-      void pollEvents();
-      const result = await request;
-      void pollEvents();
+      const result = await startDownloadWithOptionalDestination();
+      if (result?.cancelled) {
+        return;
+      }
       if (!result?.success) {
         addLog(result?.error || "Failed to start download.", "bad");
         return;
@@ -8173,6 +9080,10 @@ async function init() {
       state.isDownloading = true;
       state.cancelPending = false;
       syncStartButton();
+      if (result.target_saved) {
+        await refreshUpdateTargets();
+        addLog("Download started and update target saved.", "good");
+      }
     } catch {
       addLog("Start/Cancel download is only available from desktop app.", "bad");
     }
@@ -8244,8 +9155,11 @@ async function init() {
   setFilter("All");
   await refreshQueue({ forceReload: true });
   revealAppWindow();
+  refreshAppLayoutAfterRender();
 }
 
 window.addEventListener("pywebviewready", init);
 window.addEventListener("DOMContentLoaded", () => setTimeout(init, 200));
+window.addEventListener("load", refreshAppLayoutAfterRender);
+window.addEventListener("pageshow", refreshAppLayoutAfterRender);
 window.addEventListener("beforeunload", beginAppShutdown);

@@ -213,14 +213,76 @@
         </section>
       </section>
 
-      <section class="app-tab-panel placeholder-panel hidden" data-app-panel="update">
-        <div class="placeholder-card">
-          <div>
-            <h2>Update</h2>
-            <p>Mod update management will be added here.</p>
+      <section class="app-tab-panel update-panel hidden" data-app-panel="update">
+        <form id="update-target-form" class="input-row input-row-zoned update-toolbar">
+          <div class="input-row-zone input-row-zone-center">
+            <div class="line-input-wrap update-game-wrap">
+              <input class="control line-input" id="update-game-input" type="text" placeholder="Game name or AppID" title="Type a game name to search, or enter an AppID directly.">
+            </div>
+            <div class="line-input-wrap update-folder-wrap">
+              <input class="control line-input" id="update-folder-input" type="text" placeholder="Game mods folder" title="Choose the local mods folder for the selected game/AppID.">
+            </div>
           </div>
-          <button class="control action-btn" type="button" disabled>Coming Soon</button>
-        </div>
+          <div class="input-row-zone input-row-zone-right">
+            <button class="control action-btn" id="update-choose-folder-btn" type="button" title="Enter or select a game/AppID before choosing a folder.">Choose Folder</button>
+            <button class="control action-btn" id="update-save-target-btn" type="submit" title="Enter a game/AppID and choose a mods folder first.">Save Target</button>
+          </div>
+        </form>
+
+        <section class="search-row update-filter-row">
+          <div class="line-input-wrap update-target-select-wrap">
+            <select class="control line-input" id="update-target-select" aria-label="Update target">
+              <option value="">No update targets</option>
+            </select>
+          </div>
+          <div class="line-input-wrap">
+            <select class="control line-input" id="update-status-filter" aria-label="Update status filter">
+              <option value="all">All</option>
+              <option value="outdated">Outdated</option>
+              <option value="up_to_date">Up to date</option>
+              <option value="cannot_check">Cannot check</option>
+              <option value="downloaded">Downloaded</option>
+            </select>
+          </div>
+          <div class="queue-list-summary" id="update-summary">No update targets</div>
+        </section>
+
+        <section class="queue-list-section expanded update-tree-section">
+          <div class="queue-list-toggle update-list-header" id="update-tree-toggle" role="button" tabindex="0" aria-expanded="true">
+            <span class="queue-list-title" id="update-target-heading">Game / AppID</span>
+            <span class="queue-list-summary" id="update-tree-summary">Save a game mods folder to begin</span>
+            <span class="update-header-actions">
+              <button class="control mini-action-btn" id="update-scan-all-btn" type="button" title="Save or select an update target first.">Scan</button>
+              <button class="control mini-action-btn" id="update-header-add-queue-btn" type="button" title="Scan first, then use this when outdated mods are found.">Add to Queue</button>
+            </span>
+          </div>
+          <div class="queue-list-body">
+            <section class="queue-table-wrap update-table-wrap">
+              <table id="update-table">
+                <thead>
+                  <tr>
+                    <th>Mod Name</th>
+                    <th>Mod ID</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="update-body"></tbody>
+              </table>
+            </section>
+          </div>
+        </section>
+
+        <section class="footer-row update-action-row">
+          <button class="control footer-btn" id="update-add-queue-btn" type="button" title="Scan first, then use this when outdated mods are found.">Add to Queue</button>
+          <button class="control footer-btn start-btn" id="update-now-btn" type="button" title="Scan first, then use this when outdated mods are found.">Update Now</button>
+          <button class="control footer-btn" id="update-expose-list-btn" type="button" title="Expose scanned mods to a queue import file, then import it from Queue tab.">Expose List Mod</button>
+          <button class="control footer-btn" id="update-remove-target-btn" type="button" title="Save or select an update target first.">Remove Target</button>
+        </section>
+        <section class="log-wrap update-log-wrap" id="update-log-wrap">
+          <div class="log-area">
+            <div class="log-feed" id="update-event-log" role="log" aria-live="polite"></div>
+          </div>
+        </section>
       </section>
     </div>
     <div id="window-resize-east" class="window-resize-edge east"></div>
