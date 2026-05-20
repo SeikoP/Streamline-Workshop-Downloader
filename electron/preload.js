@@ -78,26 +78,32 @@ window.addEventListener("DOMContentLoaded", () => {
 
 const apiMethods = [
   "add_account",
+  "add_update_mods_to_queue",
   "add_workshop_mods",
   "add_workshop_item",
+  "apply_update_mods",
   "begin_window_resize",
   "browse_export_queue_file",
   "browse_import_queue_file",
   "cancel_download",
   "change_provider_for_mods",
+  "choose_update_target_folder",
   "clear_logs",
   "close_steamcmd_login_session",
   "close_window",
   "download_workshop_item_now",
   "end_window_resize",
   "export_queue",
+  "expose_update_mods",
   "get_accounts",
   "get_appids_info",
   "get_bootstrap_data",
+  "get_downloads_folder_path",
   "get_preview_queue",
   "get_queue",
   "get_queue_page",
   "get_settings",
+  "get_update_targets",
   "import_queue",
   "launch_documentation",
   "launch_report_issue",
@@ -112,14 +118,20 @@ const apiMethods = [
   "purge_accounts",
   "remove_account",
   "remove_mods",
+  "remove_update_target",
   "reorder_accounts",
   "reset_status",
+  "save_update_target",
+  "scan_update_target",
+  "scan_update_targets",
   "send_steamcmd_login_input",
   "set_active_account",
   "set_global_provider",
   "search_games",
   "search_workshop_app",
   "start_download",
+  "start_download_with_destination",
+  "update_mods_now",
   "update_appids",
   "update_settings",
   "update_window_resize"
@@ -137,6 +149,24 @@ async function callPythonApi(method, args) {
   }
   if (method === "browse_export_queue_file") {
     return ipcRenderer.invoke("dialog:save-queue-file");
+  }
+  if (method === "choose_update_target_folder") {
+    return ipcRenderer.invoke("dialog:open-update-folder");
+  }
+  if (method === "open_downloads_folder") {
+    const pathResult = await ipcRenderer.invoke("pywebview:call", "get_downloads_folder_path", args);
+    if (!pathResult?.success || !pathResult.path) {
+      return pathResult;
+    }
+    const openResult = await ipcRenderer.invoke("shell:open-path", pathResult.path);
+    if (openResult?.success) {
+      return { ...pathResult, success: true };
+    }
+    return {
+      ...pathResult,
+      success: false,
+      error: openResult?.error || "Failed to open Downloads folder."
+    };
   }
   if (method === "open_workshop_browser") {
     const result = await ipcRenderer.invoke("pywebview:call", method, args);

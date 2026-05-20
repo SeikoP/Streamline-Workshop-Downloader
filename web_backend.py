@@ -277,8 +277,235 @@ class SteamCmdInteractiveSession:
 
 
 class AppIDScraper:
+    STEAM_APP_LIST_URL = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
+    STEAM_APPIDLIST_MIRROR_URLS = {
+        "Game": "https://raw.githubusercontent.com/jsnli/steamappidlist/master/data/games_appid.json",
+        "DLC": "https://raw.githubusercontent.com/jsnli/steamappidlist/master/data/dlc_appid.json",
+        "Software": "https://raw.githubusercontent.com/jsnli/steamappidlist/master/data/software_appid.json",
+        "Hardware": "https://raw.githubusercontent.com/jsnli/steamappidlist/master/data/hardware_appid.json",
+        "Video": "https://raw.githubusercontent.com/jsnli/steamappidlist/master/data/videos_appid.json",
+    }
+    STEAM_STORE_SEARCH_URL = "https://store.steampowered.com/search/results/"
+    STEAM_STORE_SUGGEST_URL = "https://store.steampowered.com/search/suggest"
+    MIN_OFFICIAL_APP_COUNT = 10000
+    STORE_SEARCH_PAGE_SIZE = 100
+
     def __init__(self, files_dir):
         self.files_dir = files_dir
+
+    def _format_appid_entry(self, name, app_id):
+        app_id = str(app_id or "").strip()
+        name = re.sub(r"\s+", " ", str(name or "").replace("\r", " ").replace("\n", " ")).strip()
+        if not app_id.isdigit() or not name:
+            return ""
+        return f"{name},{app_id}"
+
+    def fetch_steam_app_list(self, timeout=30):
+        response = requests.get(self.STEAM_APP_LIST_URL, timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+        apps = ((payload or {}).get("applist") or {}).get("apps") or []
+        if not isinstance(apps, list):
+            return []
+
+        entries_by_id = {}
+        for app in apps:
+            if not isinstance(app, dict):
+                continue
+            entry = self._format_appid_entry(app.get("name"), app.get("appid"))
+            if not entry:
+                continue
+            app_id = entry.rsplit(",", 1)[1]
+            entries_by_id[app_id] = entry
+        return sorted(entries_by_id.values(), key=lambda value: (value.rsplit(",", 1)[0].lower(), value.rsplit(",", 1)[1]))
+
+    def fetch_steam_appidlist_mirror(self, selected_types=None, timeout=45):
+        selected = selected_types or ["Game"]
+        urls = [
+            self.STEAM_APPIDLIST_MIRROR_URLS[item]
+            for item in selected
+            if item in self.STEAM_APPIDLIST_MIRROR_URLS
+        ]
+        if not urls:
+            urls = [self.STEAM_APPIDLIST_MIRROR_URLS["Game"]]
+
+        session = requests.Session()
+        headers = {"Accept": "application/json", "User-Agent": "Streamline-Workshop-Downloader"}
+        entries_by_id = {}
+        for url in urls:
+            response = session.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            payload = response.json()
+            apps = payload if isinstance(payload, list) else []
+            for app in apps:
+                if not isinstance(app, dict):
+                    continue
+                entry = self._format_appid_entry(app.get("name"), app.get("appid"))
+                if not entry:
+                    continue
+                app_id = entry.rsplit(",", 1)[1]
+                entries_by_id[app_id] = entry
+
+        return sorted(entries_by_id.values(), key=lambda value: (value.rsplit(",", 1)[0].lower(), value.rsplit(",", 1)[1]))
+
+    def _parse_store_search_entries(self, results_html):
+        if not results_html:
+            return []
+        try:
+            document = html.fromstring(f"<div>{results_html}</div>")
+        except Exception:
+            return []
+
+        entries = []
+        for row in document.xpath(".//a[@data-ds-appid]"):
+            app_id = str(row.get("data-ds-appid") or "").split(",", 1)[0].strip()
+            title_nodes = row.xpath(".//span[contains(concat(' ', normalize-space(@class), ' '), ' title ')]/text()")
+            name = title_nodes[0] if title_nodes else ""
+            entry = self._format_appid_entry(name, app_id)
+            if entry:
+                entries.append(entry)
+        return entries
+
+    def _parse_store_suggest_entries(self, results_html):
+        if not results_html:
+            return []
+        try:
+            document = html.fromstring(f"<div>{results_html}</div>")
+        except Exception:
+            return []
+
+        entries = []
+        for row in document.xpath(".//a[@data-ds-appid]"):
+            app_id = str(row.get("data-ds-appid") or "").split(",", 1)[0].strip()
+            title_nodes = row.xpath(".//*[contains(concat(' ', normalize-space(@class), ' '), ' match_name ')]/text()")
+            name = title_nodes[0] if title_nodes else ""
+            entry = self._format_appid_entry(name, app_id)
+            if entry:
+                entries.append(entry)
+        return entries
+
+    def fetch_steam_store_search_app_list(self, timeout=30, max_pages=None):
+        session = requests.Session()
+        headers = {
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "User-Agent": "Mozilla/5.0",
+        }
+        entries_by_id = {}
+        start = 0
+        page_index = 0
+        total_count = None
+        empty_pages = 0
+
+        while True:
+            params = {
+                "query": "",
+                "start": start,
+                "count": self.STORE_SEARCH_PAGE_SIZE,
+                "dynamic_data": "",
+                "sort_by": "_ASC",
+                "category1": "998",
+                "category2": "30",
+                "snr": "1_7_7_7000_7",
+                "infinite": "1",
+                "ignore_preferences": "1",
+                "hide_filtered_results_warning": "1",
+            }
+            try:
+                response = session.get(self.STEAM_STORE_SEARCH_URL, params=params, headers=headers, timeout=timeout)
+                response.raise_for_status()
+            except Exception:
+                if entries_by_id:
+                    break
+                raise
+            payload = response.json()
+            if not isinstance(payload, dict) or not payload.get("success"):
+                break
+
+            try:
+                total_count = int(payload.get("total_count") or total_count or 0)
+            except Exception:
+                total_count = total_count or 0
+
+            page_entries = self._parse_store_search_entries(payload.get("results_html") or "")
+            new_entries = 0
+            for entry in page_entries:
+                app_id = entry.rsplit(",", 1)[1]
+                if app_id not in entries_by_id:
+                    entries_by_id[app_id] = entry
+                    new_entries += 1
+
+            if not page_entries or new_entries == 0:
+                empty_pages += 1
+                if empty_pages >= 3:
+                    break
+            else:
+                empty_pages = 0
+
+            page_index += 1
+            start += self.STORE_SEARCH_PAGE_SIZE
+            if max_pages is not None and page_index >= max_pages:
+                break
+            if total_count and start >= total_count:
+                break
+
+        return sorted(entries_by_id.values(), key=lambda value: (value.rsplit(",", 1)[0].lower(), value.rsplit(",", 1)[1]))
+
+    def search_steam_store_games(self, query, limit=25, timeout=20):
+        query = str(query or "").strip()
+        if not query:
+            return []
+        try:
+            max_results = max(1, min(50, int(limit or 25)))
+        except Exception:
+            max_results = 25
+        params = {
+            "term": query,
+            "f": "games",
+            "cc": "US",
+            "l": "english",
+        }
+        try:
+            response = requests.get(
+                self.STEAM_STORE_SUGGEST_URL,
+                params=params,
+                headers={"Accept": "text/html, */*; q=0.01", "User-Agent": "Mozilla/5.0"},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            entries = self._parse_store_suggest_entries(response.text or "")
+        except Exception:
+            entries = []
+
+        if not entries:
+            params = {
+                "term": query,
+                "start": 0,
+                "count": max_results,
+                "dynamic_data": "",
+                "ignore_preferences": "1",
+                "hide_filtered_results_warning": "1",
+                "infinite": "1",
+            }
+            response = requests.get(
+                self.STEAM_STORE_SEARCH_URL,
+                params=params,
+                headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            entries = self._parse_store_search_entries((payload or {}).get("results_html") or "")
+        games = []
+        seen = set()
+        for entry in entries:
+            name, app_id = entry.rsplit(",", 1)
+            if app_id in seen:
+                continue
+            seen.add(app_id)
+            games.append({"app_id": app_id, "game_name": name})
+            if len(games) >= max_results:
+                break
+        return games
 
     def scrape_steamdb(self, selected_types, headless=True):
         scraper_fn = _scrape_steamdb_botasaurus_headless if bool(headless) else _scrape_steamdb_botasaurus_visible
@@ -309,8 +536,14 @@ class StreamlineWebBackend:
         self.steamcmd_download_path = os.path.join(self.downloads_root, "SteamCMD")
         self.steamwebapi_download_path = os.path.join(self.downloads_root, "SteamWebAPI")
         self.mod_log_path = os.path.join(self.files_dir, "Logs", "mod_downloads.json")
+        self.update_targets_path = os.path.join(self.files_dir, "update_targets.json")
+        self.cache_dir = os.path.join(self.files_dir, "cache")
+        self.bundled_appids_path = os.path.join(self.files_dir, "AppIDs.txt")
+        self.runtime_appids_path = os.path.join(self.cache_dir, "AppIDs.runtime.txt")
+        self.runtime_appids_meta_path = os.path.join(self.cache_dir, "AppIDs.runtime.meta.json")
 
         os.makedirs(self.files_dir, exist_ok=True)
+        os.makedirs(self.cache_dir, exist_ok=True)
         os.makedirs(self.downloads_root, exist_ok=True)
         os.makedirs(self.steamcmd_download_path, exist_ok=True)
         os.makedirs(self.steamwebapi_download_path, exist_ok=True)
@@ -330,6 +563,7 @@ class StreamlineWebBackend:
         self._mod_logs_save_timer = None
         self._mod_logs_dirty = False
         self._mod_logs_save_delay_sec = 0.5
+        self._update_targets_lock = threading.RLock()
         self._queue_revision = 0
         self._queue_query_cache = None
         self._queue_emit_lock = threading.Lock()
@@ -551,20 +785,35 @@ class StreamlineWebBackend:
 
     def _load_app_ids(self):
         self.app_ids = {}
-        app_ids_path = os.path.join(self.files_dir, "AppIDs.txt")
-        if not os.path.isfile(app_ids_path):
-            return
+        self.app_ids_sources = {"runtime": 0, "bundled": 0}
 
-        try:
-            with open(app_ids_path, "r", encoding="utf-8") as file:
-                for line in file:
-                    line = line.strip()
-                    if not line or "," not in line:
-                        continue
-                    game_name, app_id = line.rsplit(",", 1)
-                    self.app_ids[app_id.strip()] = game_name.strip()
-        except Exception as e:
-            self.log(f"Failed to load AppIDs.txt: {e}", tone="bad", source="system", action="appids_load_failed")
+        def load_file(path, source):
+            loaded = 0
+            if not path or not os.path.isfile(path):
+                return 0
+            try:
+                with open(path, "r", encoding="utf-8") as file:
+                    for line in file:
+                        line = line.strip()
+                        if not line or "," not in line:
+                            continue
+                        game_name, app_id = line.rsplit(",", 1)
+                        key = app_id.strip()
+                        if not key or key in self.app_ids:
+                            continue
+                        self.app_ids[key] = game_name.strip()
+                        loaded += 1
+            except Exception as e:
+                self.log(
+                    f"Failed to load {source} AppIDs database: {e}",
+                    tone="bad",
+                    source="system",
+                    action="appids_load_failed",
+                )
+            return loaded
+
+        self.app_ids_sources["runtime"] = load_file(self.runtime_appids_path, "runtime")
+        self.app_ids_sources["bundled"] = load_file(self.bundled_appids_path, "bundled")
 
     def _rebuild_queue_indexes_locked(self):
         mod_ids = set()
@@ -877,6 +1126,7 @@ class StreamlineWebBackend:
             "download_state": {
                 "is_downloading": self.is_downloading
             },
+            "update_targets": self._serialize_update_targets(self._get_update_targets()),
             "appids_count": len(self.app_ids),
             "warning": ""
         }
@@ -1741,6 +1991,50 @@ class StreamlineWebBackend:
 
         return {"success": True, "path": file_path}
 
+    def expose_update_mods(self, target_ids, file_path, provider="Default"):
+        if not file_path:
+            return {"success": False, "error": "Destination file is required."}
+        selected_targets = {
+            str(target_id or "").strip()
+            for target_id in (target_ids if isinstance(target_ids, list) else [target_ids])
+            if str(target_id or "").strip()
+        }
+        if not selected_targets:
+            return {"success": False, "error": "Select at least one update target to expose."}
+
+        targets = [
+            target for target in self._get_update_targets()
+            if str(target.get("id", "")) in selected_targets
+        ]
+        if not targets:
+            return {"success": False, "error": "No matching update targets found."}
+
+        output_path = os.path.abspath(str(file_path))
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        safe_provider = provider or self.config.get("download_provider", "Default") or "Default"
+        exposed_count = 0
+        with open(output_path, "w", encoding="utf-8") as file:
+            for target in targets:
+                for mod in list(target.get("mods") or []):
+                    mod_id = str(mod.get("mod_id", "")).strip()
+                    if not mod_id:
+                        continue
+                    mod_name = str(mod.get("name") or mod.get("mod_name") or mod.get("folder_name") or f"Mod {mod_id}")
+                    file.write(f"{target.get('game_name', 'Unknown Game')}|{mod_id}|{mod_name}|{safe_provider}\n")
+                    exposed_count += 1
+
+        if exposed_count <= 0:
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass
+            return {"success": False, "error": "Selected targets have no scanned mods to expose."}
+
+        return {"success": True, "path": output_path, "count": exposed_count, "targets": len(targets)}
+
     def _is_mod_in_queue(self, mod_id: str):
         key = str(mod_id or "").strip()
         if not key:
@@ -2152,6 +2446,15 @@ class StreamlineWebBackend:
             self._load_app_ids()
         if not query:
             return {"success": True, "games": [], "count": 0, "appids_count": len(self.app_ids)}
+        if re.fullmatch(r"\d+", query):
+            game_name = self.app_ids.get(query, f"AppID {query}")
+            return {
+                "success": True,
+                "games": [{"app_id": query, "game_name": game_name}],
+                "count": 1,
+                "total_matches": 1,
+                "appids_count": len(self.app_ids),
+            }
         if not self.app_ids:
             return {
                 "success": False,
@@ -2178,13 +2481,567 @@ class StreamlineWebBackend:
         ranked = exact + prefix + contains
         ranked.sort(key=lambda game: (str(game["game_name"]).lower(), str(game["app_id"])))
         games = ranked[:max_results]
+        source = "local_cache"
+        if not games:
+            try:
+                scraper = AppIDScraper(self.files_dir)
+                store_games = scraper.search_steam_store_games(query, limit=max_results)
+            except Exception:
+                store_games = []
+            discovered_entries = []
+            for game in store_games:
+                app_id = str(game.get("app_id", "")).strip()
+                if app_id and self._check_if_appid_has_workshop(app_id):
+                    games.append(game)
+                    if app_id not in self.app_ids:
+                        entry = scraper._format_appid_entry(game.get("game_name"), app_id)
+                        if entry:
+                            discovered_entries.append(entry)
+                if len(games) >= max_results:
+                    break
+            if games:
+                source = "steam_store_search"
+            if discovered_entries:
+                self._cache_discovered_appids(discovered_entries)
         return {
             "success": True,
             "games": games,
             "count": len(games),
-            "total_matches": len(ranked),
+            "total_matches": len(ranked) if source == "local_cache" else len(games),
             "appids_count": len(self.app_ids),
+            "source": source,
         }
+
+    def _empty_update_targets_payload(self):
+        return {"version": 1, "targets": []}
+
+    def _load_update_targets_payload(self):
+        with self._update_targets_lock:
+            if not os.path.isfile(self.update_targets_path):
+                return self._empty_update_targets_payload()
+            try:
+                with open(self.update_targets_path, "r", encoding="utf-8") as file:
+                    data = json.load(file)
+                if isinstance(data, dict) and isinstance(data.get("targets"), list):
+                    return data
+                if isinstance(data, list):
+                    return {"version": 1, "targets": data}
+            except Exception as e:
+                self.log(
+                    f"Failed to read update targets: {e}",
+                    tone="bad",
+                    source="system",
+                    action="update_targets_read_failed",
+                )
+            return self._empty_update_targets_payload()
+
+    def _save_update_targets_payload(self, payload):
+        with self._update_targets_lock:
+            try:
+                data = {
+                    "version": int((payload or {}).get("version", 1) or 1),
+                    "targets": list((payload or {}).get("targets") or []),
+                }
+                temp_path = f"{self.update_targets_path}.tmp"
+                with open(temp_path, "w", encoding="utf-8") as file:
+                    json.dump(data, file, indent=4)
+                os.replace(temp_path, self.update_targets_path)
+                return True
+            except Exception as e:
+                self.log(
+                    f"Failed to save update targets: {e}",
+                    tone="bad",
+                    source="system",
+                    action="update_targets_save_failed",
+                )
+                return False
+
+    def _normalize_update_folder_path(self, folder_path):
+        text = str(folder_path or "").strip().strip('"')
+        if not text:
+            return ""
+        return os.path.abspath(os.path.expanduser(text))
+
+    def _make_update_target_id(self, app_id, mods_folder):
+        return f"{str(app_id).strip()}|{os.path.normcase(os.path.abspath(mods_folder))}"
+
+    def _resolve_update_target_app(self, app_id_or_game):
+        text = str(app_id_or_game or "").strip()
+        if not text:
+            return "", ""
+        app_id = self._extract_appid(text) or (text if text.isdigit() else "")
+        if app_id:
+            return str(app_id), self.app_ids.get(str(app_id), f"AppID {app_id}")
+
+        if not self.app_ids:
+            self._load_app_ids()
+        query = text.lower()
+        exact_matches = [
+            (candidate_id, name)
+            for candidate_id, name in self.app_ids.items()
+            if str(name).strip().lower() == query
+        ]
+        if exact_matches:
+            candidate_id, name = sorted(exact_matches, key=lambda item: item[1].lower())[0]
+            return str(candidate_id), str(name)
+        contains_matches = [
+            (candidate_id, name)
+            for candidate_id, name in self.app_ids.items()
+            if query in str(name).lower()
+        ]
+        if len(contains_matches) == 1:
+            candidate_id, name = contains_matches[0]
+            return str(candidate_id), str(name)
+        return "", ""
+
+    def _normalize_update_target(self, target):
+        if not isinstance(target, dict):
+            return None
+        app_id = str(target.get("app_id", "")).strip()
+        mods_folder = self._normalize_update_folder_path(target.get("mods_folder", ""))
+        if not app_id or not mods_folder:
+            return None
+        normalized = dict(target)
+        normalized["app_id"] = app_id
+        normalized["game_name"] = str(target.get("game_name") or self.app_ids.get(app_id) or f"AppID {app_id}")
+        normalized["mods_folder"] = mods_folder
+        normalized["id"] = str(target.get("id") or self._make_update_target_id(app_id, mods_folder))
+        normalized["enabled"] = bool(target.get("enabled", True))
+        normalized["last_scanned_at"] = float(target.get("last_scanned_at", 0) or 0)
+        normalized["default_download_destination"] = bool(target.get("default_download_destination", True))
+        normalized["mods"] = list(target.get("mods") or [])
+        applied = target.get("applied_timestamps")
+        normalized["applied_timestamps"] = applied if isinstance(applied, dict) else {}
+        return normalized
+
+    def _get_update_targets(self):
+        payload = self._load_update_targets_payload()
+        targets = []
+        for target in payload.get("targets", []):
+            normalized = self._normalize_update_target(target)
+            if normalized:
+                targets.append(normalized)
+        return targets
+
+    def _write_update_targets(self, targets):
+        return self._save_update_targets_payload({"version": 1, "targets": targets})
+
+    def _find_update_target(self, target_id, targets=None):
+        target_id = str(target_id or "").strip()
+        for target in list(targets if targets is not None else self._get_update_targets()):
+            if str(target.get("id", "")) == target_id:
+                return target
+        return None
+
+    def _extract_workshop_id_from_folder_name(self, folder_name):
+        match = re.search(r"(?<!\d)(\d{6,})(?!\d)", str(folder_name or ""))
+        return match.group(1) if match else ""
+
+    def _derive_update_mod_name(self, folder_name, mod_id):
+        text = str(folder_name or "").strip()
+        if mod_id:
+            text = re.sub(rf"[\[\(\s-]*{re.escape(str(mod_id))}[\]\)\s-]*", " ", text).strip()
+        text = re.sub(r"\s+", " ", text).strip(" -_[]()")
+        return text or (f"Mod {mod_id}" if mod_id else "Unknown")
+
+    def _is_path_inside(self, child_path, parent_path):
+        try:
+            child = os.path.abspath(child_path)
+            parent = os.path.abspath(parent_path)
+            return os.path.commonpath([child, parent]) == parent
+        except Exception:
+            return False
+
+    def _resolve_update_local_timestamp(self, target, mod_id, folder_path, logs=None):
+        applied = target.get("applied_timestamps") if isinstance(target, dict) else {}
+        if isinstance(applied, dict):
+            try:
+                value = float((applied.get(str(mod_id)) or {}).get("timestamp", 0) or 0)
+                if value > 0:
+                    return value
+            except Exception:
+                pass
+        logs = logs if isinstance(logs, dict) else self._load_mod_download_logs()
+        try:
+            value = float((logs.get(str(mod_id)) or {}).get("timestamp", 0) or 0)
+            if value > 0:
+                return value
+        except Exception:
+            pass
+        try:
+            return float(os.path.getmtime(folder_path))
+        except Exception:
+            return 0.0
+
+    def _find_downloaded_update_folder(self, app_id, mod_id):
+        mod_id = str(mod_id or "").strip()
+        app_id = str(app_id or "").strip()
+        if not mod_id:
+            return ""
+        candidates = []
+        if app_id:
+            candidates.append(os.path.join(self.steamcmd_download_path, app_id))
+        candidates.append(self.steamcmd_download_path)
+        candidates.append(self.steamwebapi_download_path)
+
+        for root in candidates:
+            if not root or not os.path.isdir(root):
+                continue
+            direct = os.path.join(root, mod_id)
+            if os.path.isdir(direct):
+                return os.path.abspath(direct)
+            try:
+                for name in os.listdir(root):
+                    path = os.path.join(root, name)
+                    if os.path.isdir(path) and mod_id in name:
+                        return os.path.abspath(path)
+            except Exception:
+                continue
+        return ""
+
+    def _sync_update_mod_runtime_status(self, target, mod):
+        mod_id = str((mod or {}).get("mod_id", "")).strip()
+        if not mod_id:
+            return mod
+        with self.state_lock:
+            queue_mod = self._queue_mod_map.get(mod_id)
+            queue_status = str((queue_mod or {}).get("status", "")).strip()
+        if queue_status:
+            mod["queue_status"] = queue_status
+            if mod.get("status") == "applied":
+                return mod
+            if queue_status == "Queued":
+                mod["status"] = "queued"
+            elif queue_status == "Downloading":
+                mod["status"] = "downloading"
+            elif queue_status == "Downloaded":
+                mod["status"] = "downloaded"
+        download_path = self._find_downloaded_update_folder(target.get("app_id"), mod_id)
+        if download_path:
+            mod["download_output_path"] = download_path
+            if mod.get("status") in {"outdated", "queued", "downloading"}:
+                mod["status"] = "downloaded"
+        return mod
+
+    def _serialize_update_targets(self, targets):
+        serialized = []
+        for target in targets:
+            normalized = self._normalize_update_target(target)
+            if not normalized:
+                continue
+            normalized["mods"] = [
+                self._sync_update_mod_runtime_status(normalized, dict(mod))
+                for mod in list(normalized.get("mods") or [])
+            ]
+            serialized.append(normalized)
+        return serialized
+
+    def get_update_targets(self):
+        return {"success": True, "targets": self._serialize_update_targets(self._get_update_targets())}
+
+    def save_update_target(self, app_id_or_game, mods_folder, replace_existing=False):
+        app_id, game_name = self._resolve_update_target_app(app_id_or_game)
+        if not app_id:
+            return {"success": False, "error": "Could not resolve a single AppID for this game."}
+
+        folder = self._normalize_update_folder_path(mods_folder)
+        if not folder:
+            return {"success": False, "error": "Mods folder is required."}
+        if not os.path.isdir(folder):
+            return {"success": False, "error": "Mods folder does not exist."}
+
+        targets = self._get_update_targets()
+        existing = next((target for target in targets if str(target.get("app_id")) == str(app_id)), None)
+        if existing and os.path.normcase(existing.get("mods_folder", "")) != os.path.normcase(folder):
+            if not replace_existing:
+                return {
+                    "success": False,
+                    "conflict": True,
+                    "error": f"{existing.get('game_name', game_name)} already has an update target.",
+                    "existing_target": existing,
+                }
+            targets = [target for target in targets if str(target.get("app_id")) != str(app_id)]
+        elif existing:
+            targets = [target for target in targets if str(target.get("app_id")) != str(app_id)]
+
+        target = {
+            "id": self._make_update_target_id(app_id, folder),
+            "app_id": str(app_id),
+            "game_name": game_name or f"AppID {app_id}",
+            "mods_folder": folder,
+            "enabled": True,
+            "last_scanned_at": existing.get("last_scanned_at", 0) if existing else 0,
+            "default_download_destination": True,
+            "mods": existing.get("mods", []) if existing else [],
+            "applied_timestamps": existing.get("applied_timestamps", {}) if existing else {},
+        }
+        targets.append(target)
+        targets.sort(key=lambda item: (str(item.get("game_name", "")).lower(), str(item.get("app_id", ""))))
+        if not self._write_update_targets(targets):
+            return {"success": False, "error": "Failed to save update target."}
+        return {"success": True, "target": self._serialize_update_targets([target])[0], "targets": self._serialize_update_targets(targets)}
+
+    def remove_update_target(self, target_id):
+        targets = self._get_update_targets()
+        before = len(targets)
+        targets = [target for target in targets if str(target.get("id", "")) != str(target_id or "")]
+        if len(targets) == before:
+            return {"success": False, "error": "Update target not found."}
+        if not self._write_update_targets(targets):
+            return {"success": False, "error": "Failed to remove update target."}
+        return {"success": True, "targets": self._serialize_update_targets(targets)}
+
+    def _scan_update_target(self, target):
+        folder = target.get("mods_folder", "")
+        if not os.path.isdir(folder):
+            target["mods"] = []
+            target["last_scanned_at"] = time.time()
+            return target, {"success": False, "error": "Mods folder does not exist.", "target": target}
+
+        child_folders = []
+        try:
+            for name in os.listdir(folder):
+                path = os.path.join(folder, name)
+                if os.path.isdir(path):
+                    child_folders.append((name, path))
+        except Exception as e:
+            return target, {"success": False, "error": f"Failed to scan folder: {e}", "target": target}
+
+        detected_ids = []
+        scan_mods = []
+        logs = self._load_mod_download_logs()
+        for folder_name, folder_path in sorted(child_folders, key=lambda item: item[0].lower()):
+            mod_id = self._extract_workshop_id_from_folder_name(folder_name)
+            cached_metadata = self._get_cached_mod_metadata(mod_id) if mod_id else None
+            cached_name = str((cached_metadata or {}).get("mod_name", "")).strip()
+            logged_name = str((logs.get(str(mod_id)) or {}).get("name", "")).strip() if mod_id else ""
+            derived_name = self._derive_update_mod_name(folder_name, mod_id)
+            mod = {
+                "mod_id": mod_id,
+                "name": cached_name or logged_name or derived_name,
+                "mod_name": cached_name or logged_name or derived_name,
+                "folder_name": folder_name,
+                "folder_path": os.path.abspath(folder_path),
+                "local_updated_at": 0,
+                "remote_updated_at": None,
+                "status": "cannot_check" if not mod_id else "not_scanned",
+                "queue_status": "",
+                "download_output_path": "",
+            }
+            if mod_id:
+                mod["local_updated_at"] = self._resolve_update_local_timestamp(target, mod_id, folder_path, logs=logs)
+                detected_ids.append(mod_id)
+            scan_mods.append(mod)
+
+        remote_details = self._fetch_published_file_details_batch(detected_ids) if detected_ids else {}
+        for mod in scan_mods:
+            mod_id = str(mod.get("mod_id", "")).strip()
+            if not mod_id:
+                continue
+            details = remote_details.get(mod_id) if isinstance(remote_details, dict) else None
+            if isinstance(details, dict):
+                remote_title = str(details.get("title", "")).strip()
+                if remote_title:
+                    mod["name"] = remote_title
+                    mod["mod_name"] = remote_title
+                app_id = str(details.get("consumer_app_id", "") or "").strip()
+                if remote_title or app_id:
+                    self._cache_mod_metadata(mod_id, {
+                        "mod_name": remote_title or mod.get("name"),
+                        "app_id": app_id or target.get("app_id"),
+                        "game_name": target.get("game_name", ""),
+                    })
+            remote_ts = None
+            if isinstance(details, dict):
+                try:
+                    remote_ts = int(details.get("time_updated")) if details.get("time_updated") is not None else None
+                except Exception:
+                    remote_ts = None
+            mod["remote_updated_at"] = remote_ts
+            if not remote_ts:
+                mod["status"] = "cannot_check"
+            elif float(remote_ts) > float(mod.get("local_updated_at", 0) or 0):
+                mod["status"] = "outdated"
+            else:
+                mod["status"] = "up_to_date"
+            self._sync_update_mod_runtime_status(target, mod)
+
+        target["mods"] = scan_mods
+        target["last_scanned_at"] = time.time()
+        return target, {"success": True, "target": target, "count": len(scan_mods)}
+
+    def scan_update_target(self, target_id):
+        targets = self._get_update_targets()
+        changed = False
+        result = None
+        for index, target in enumerate(targets):
+            if str(target.get("id", "")) == str(target_id or ""):
+                scanned, result = self._scan_update_target(target)
+                targets[index] = scanned
+                changed = True
+                break
+        if not changed:
+            return {"success": False, "error": "Update target not found."}
+        self._write_update_targets(targets)
+        result = result or {"success": True}
+        result["targets"] = self._serialize_update_targets(targets)
+        result["target"] = self._serialize_update_targets([result.get("target", {})])[0] if result.get("target") else None
+        return result
+
+    def scan_update_targets(self):
+        targets = self._get_update_targets()
+        scanned_targets = []
+        errors = []
+        for target in targets:
+            scanned, result = self._scan_update_target(target)
+            scanned_targets.append(scanned)
+            if not result.get("success"):
+                errors.append({"target_id": target.get("id"), "error": result.get("error", "Scan failed.")})
+        self._write_update_targets(scanned_targets)
+        return {
+            "success": not errors,
+            "targets": self._serialize_update_targets(scanned_targets),
+            "errors": errors,
+            "error": "; ".join(error["error"] for error in errors) if errors else "",
+        }
+
+    def _get_update_target_mods(self, target_id, mod_ids):
+        target = self._find_update_target(target_id)
+        if not target:
+            return None, [], "Update target not found."
+        selected_ids = {str(mod_id).strip() for mod_id in (mod_ids or []) if str(mod_id).strip()}
+        if not selected_ids:
+            return target, [], "Select at least one mod."
+        mods = [dict(mod) for mod in target.get("mods", []) if str(mod.get("mod_id", "")).strip() in selected_ids]
+        if not mods:
+            return target, [], "No matching scanned mods found."
+        return target, mods, ""
+
+    def add_update_mods_to_queue(self, target_id, mod_ids):
+        target, mods, error = self._get_update_target_mods(target_id, mod_ids)
+        if error:
+            return {"success": False, "error": error}
+        queue_mods = []
+        for mod in mods:
+            mod_id = str(mod.get("mod_id", "")).strip()
+            if not mod_id:
+                continue
+            queue_mods.append({
+                "game_name": target.get("game_name", "Unknown Game"),
+                "app_id": target.get("app_id"),
+                "mod_id": mod_id,
+                "mod_name": mod.get("name") or mod.get("folder_name") or f"Mod {mod_id}",
+            })
+        result = self.add_workshop_mods(queue_mods, self.config.get("download_provider", "Default"))
+        if result.get("success"):
+            self.scan_update_target(target.get("id"))
+        return result
+
+    def update_mods_now(self, target_id, mod_ids):
+        result = self.add_update_mods_to_queue(target_id, mod_ids)
+        if not result.get("success"):
+            return result
+        start_result = self.start_download()
+        if not start_result.get("success"):
+            return {**start_result, "added": result.get("added", 0), "skipped": result.get("skipped", 0)}
+        return {"success": True, "added": result.get("added", 0), "skipped": result.get("skipped", 0), "started": True}
+
+    def apply_update_mods(self, target_id, mod_ids):
+        targets = self._get_update_targets()
+        target_index = next((index for index, item in enumerate(targets) if str(item.get("id", "")) == str(target_id or "")), -1)
+        if target_index < 0:
+            return {"success": False, "error": "Update target not found."}
+        target = targets[target_index]
+        selected_ids = {str(mod_id).strip() for mod_id in (mod_ids or []) if str(mod_id).strip()}
+        if not selected_ids:
+            return {"success": False, "error": "Select at least one mod."}
+
+        applied = 0
+        failed = []
+        applied_timestamps = target.get("applied_timestamps")
+        if not isinstance(applied_timestamps, dict):
+            applied_timestamps = {}
+        mods_folder = target.get("mods_folder", "")
+        next_mods = []
+
+        for mod in list(target.get("mods") or []):
+            mod = dict(mod)
+            mod_id = str(mod.get("mod_id", "")).strip()
+            if mod_id not in selected_ids:
+                next_mods.append(mod)
+                continue
+            old_path = os.path.abspath(str(mod.get("folder_path") or ""))
+            if not old_path or not self._is_path_inside(old_path, mods_folder) or os.path.abspath(old_path) == os.path.abspath(mods_folder):
+                mod["status"] = "apply_failed"
+                mod["error"] = "Refused to delete a folder outside the saved target folder."
+                failed.append({"mod_id": mod_id, "error": mod["error"]})
+                next_mods.append(mod)
+                continue
+            source_path = self._find_downloaded_update_folder(target.get("app_id"), mod_id)
+            if not source_path or not os.path.isdir(source_path):
+                mod["status"] = "apply_failed"
+                mod["error"] = "Downloaded update folder was not found."
+                failed.append({"mod_id": mod_id, "error": mod["error"]})
+                next_mods.append(mod)
+                continue
+            try:
+                if os.path.isdir(old_path):
+                    shutil.rmtree(old_path)
+                os.makedirs(os.path.dirname(old_path), exist_ok=True)
+                shutil.move(source_path, old_path)
+                applied_at = float(mod.get("remote_updated_at") or time.time())
+                mod["local_updated_at"] = applied_at
+                mod["status"] = "applied"
+                mod["download_output_path"] = ""
+                mod.pop("error", None)
+                applied_timestamps[mod_id] = {
+                    "timestamp": applied_at,
+                    "date": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                }
+                applied += 1
+            except Exception as e:
+                mod["status"] = "apply_failed"
+                mod["error"] = str(e)
+                failed.append({"mod_id": mod_id, "error": str(e)})
+            next_mods.append(mod)
+
+        target["mods"] = next_mods
+        target["applied_timestamps"] = applied_timestamps
+        targets[target_index] = target
+        self._write_update_targets(targets)
+        return {
+            "success": not failed,
+            "applied": applied,
+            "failed": failed,
+            "error": "; ".join(item["error"] for item in failed) if failed else "",
+            "targets": self._serialize_update_targets(targets),
+        }
+
+    def choose_update_target_folder(self):
+        return {"success": False, "error": "Folder picker is not available in this backend."}
+
+    def start_download_with_destination(self, destination_options=None):
+        options = destination_options if isinstance(destination_options, dict) else {}
+        folder = self._normalize_update_folder_path(options.get("mods_folder") or options.get("destination") or "")
+        save_target = bool(options.get("save_update_target"))
+        replace_existing = bool(options.get("replace_existing"))
+
+        if save_target:
+            with self.state_lock:
+                queued_mods = [dict(mod) for mod in self.download_queue if mod.get("status") == "Queued"]
+            app_ids = {str(mod.get("app_id", "")).strip() for mod in queued_mods if str(mod.get("app_id", "")).strip()}
+            if len(app_ids) != 1:
+                return {"success": False, "error": "Saving an update target requires a queued batch with exactly one AppID."}
+            if not folder:
+                return {"success": False, "error": "Mods folder is required."}
+            save_result = self.save_update_target(next(iter(app_ids)), folder, replace_existing=replace_existing)
+            if not save_result.get("success"):
+                return save_result
+
+        result = self.start_download()
+        if save_target and result.get("success"):
+            result["target_saved"] = True
+        return result
 
     def add_workshop_mods(self, mods, provider="Default"):
         try:
@@ -3414,13 +4271,18 @@ class StreamlineWebBackend:
         mode = "immediate" if delete_on_cancel else "after_batch"
         return {"success": True, "mode": mode}
 
-    def open_downloads_folder(self, mod_id=None):
+    def get_downloads_folder_path(self, mod_id=None):
         target = self.downloads_root
         if mod_id:
             with self.state_lock:
                 mod = next((m for m in self.download_queue if str(m.get("mod_id")) == str(mod_id)), None)
             if mod:
                 target = self._get_download_path(mod)
+        return {"success": True, "path": os.path.abspath(target), "message": os.path.abspath(target)}
+
+    def open_downloads_folder(self, mod_id=None):
+        path_result = self.get_downloads_folder_path(mod_id)
+        target = path_result.get("path") or self.downloads_root
         os.makedirs(target, exist_ok=True)
         try:
             if hasattr(os, "startfile"):
@@ -4243,34 +5105,188 @@ class StreamlineWebBackend:
             return {"success": True}
 
     def get_appids_info(self):
-        appids_path = os.path.join(self.files_dir, "AppIDs.txt")
-        if not os.path.isfile(appids_path):
-            return {"exists": False, "count": 0, "last_updated": None}
-        with open(appids_path, "r", encoding="utf-8") as f:
-            count = len([line for line in f if line.strip()])
+        bundled_count = self._count_appids_file_entries(self.bundled_appids_path)
+        runtime_count = self._count_appids_file_entries(self.runtime_appids_path)
+        runtime_meta = self._read_runtime_appids_meta()
+        if not self.app_ids:
+            self._load_app_ids()
+        active_source = "runtime_cache" if runtime_count > 0 else ("bundled_seed" if bundled_count > 0 else "none")
+        active_path = self.runtime_appids_path if runtime_count > 0 else self.bundled_appids_path
+        last_updated = None
+        if active_path and os.path.isfile(active_path):
+            last_updated = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(active_path)))
         return {
-            "exists": True,
-            "count": count,
-            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(appids_path)))
+            "exists": bool(runtime_count or bundled_count),
+            "count": len(self.app_ids),
+            "last_updated": last_updated,
+            "active_source": active_source,
+            "source": runtime_meta.get("source") if runtime_count else "bundled_seed",
+            "source_label": runtime_meta.get("source_label") if runtime_count else "Bundled seed",
+            "runtime_cache": {
+                "exists": os.path.isfile(self.runtime_appids_path),
+                "path": self.runtime_appids_path,
+                "count": runtime_count,
+                "last_updated": runtime_meta.get("last_updated"),
+                "source": runtime_meta.get("source", ""),
+                "source_label": runtime_meta.get("source_label", ""),
+            },
+            "bundled_seed": {
+                "exists": os.path.isfile(self.bundled_appids_path),
+                "path": self.bundled_appids_path,
+                "count": bundled_count,
+                "last_updated": (
+                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(self.bundled_appids_path)))
+                    if os.path.isfile(self.bundled_appids_path)
+                    else None
+                ),
+            },
         }
+
+    def _count_appids_file_entries(self, appids_path):
+        if not os.path.isfile(appids_path):
+            return 0
+        try:
+            with open(appids_path, "r", encoding="utf-8") as f:
+                return sum(1 for line in f if line.strip() and "," in line)
+        except Exception:
+            return 0
+
+    def _read_appids_file_entries(self, appids_path):
+        if not os.path.isfile(appids_path):
+            return []
+        entries = []
+        try:
+            with open(appids_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    text = line.strip()
+                    if not text or "," not in text:
+                        continue
+                    name, app_id = text.rsplit(",", 1)
+                    app_id = app_id.strip()
+                    name = re.sub(r"\s+", " ", name).strip()
+                    if name and app_id.isdigit():
+                        entries.append(f"{name},{app_id}")
+        except Exception:
+            return []
+        return entries
+
+    def _merge_appids_entries(self, *entry_lists):
+        entries_by_id = {}
+        for entries in entry_lists:
+            for entry in entries or []:
+                if not isinstance(entry, str) or "," not in entry:
+                    continue
+                name, app_id = entry.rsplit(",", 1)
+                app_id = app_id.strip()
+                name = re.sub(r"\s+", " ", name).strip()
+                if not name or not app_id.isdigit() or app_id in entries_by_id:
+                    continue
+                entries_by_id[app_id] = f"{name},{app_id}"
+        return sorted(entries_by_id.values(), key=lambda value: (value.rsplit(",", 1)[0].lower(), value.rsplit(",", 1)[1]))
+
+    def _read_runtime_appids_meta(self):
+        if not os.path.isfile(self.runtime_appids_meta_path):
+            return {}
+        try:
+            with open(self.runtime_appids_meta_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _write_appids_entries(self, entries, source="", source_label=""):
+        os.makedirs(self.cache_dir, exist_ok=True)
+        with open(self.runtime_appids_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(entries))
+        metadata = {
+            "source": str(source or "unknown"),
+            "source_label": str(source_label or source or "Unknown"),
+            "count": len(entries),
+            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with open(self.runtime_appids_meta_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+        self._load_app_ids()
+
+    def _cache_discovered_appids(self, entries):
+        if not entries:
+            return
+        runtime_entries = self._read_appids_file_entries(self.runtime_appids_path)
+        bundled_entries = self._read_appids_file_entries(self.bundled_appids_path)
+        merged_entries = self._merge_appids_entries(runtime_entries, entries, bundled_entries)
+        if len(merged_entries) <= len(runtime_entries):
+            return
+        self._write_appids_entries(
+            merged_entries,
+            source="runtime_with_store_search",
+            source_label="Runtime cache + Steam Store search additions",
+        )
 
     def update_appids(self, selected_types, headless=True):
         selected_types = selected_types or ["Game"]
         use_headless = bool(headless)
         scraper = AppIDScraper(self.files_dir)
+        current_count = self._count_appids_file_entries(self.runtime_appids_path)
+        bundled_count = self._count_appids_file_entries(self.bundled_appids_path)
+
         try:
-            entries = scraper.scrape_steamdb(selected_types, headless=use_headless)
+            workshop_entries = scraper.scrape_steamdb(selected_types, headless=use_headless)
         except Exception as e:
-            return {"success": False, "error": f"Failed to update AppIDs via Botasaurus: {e}"}
+            workshop_entries = []
+            workshop_error = str(e)
+        else:
+            workshop_error = ""
 
-        if not entries:
-            return {"success": False, "error": "SteamDB scraping returned zero AppIDs."}
+        min_workshop_count = max(1, min(bundled_count or 0, 500))
+        runtime_entries = self._read_appids_file_entries(self.runtime_appids_path)
+        bundled_entries = self._read_appids_file_entries(self.bundled_appids_path)
+        store_workshop_entries = []
+        store_error = ""
+        if "Game" in selected_types:
+            try:
+                store_workshop_entries = scraper.fetch_steam_store_search_app_list()
+            except Exception as e:
+                store_error = str(e)
 
-        appids_path = os.path.join(self.files_dir, "AppIDs.txt")
-        with open(appids_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(entries))
-        self._load_app_ids()
-        return {"success": True, "count": len(entries)}
+        merged_workshop_entries = self._merge_appids_entries(
+            workshop_entries,
+            store_workshop_entries,
+            runtime_entries,
+            bundled_entries,
+        )
+        if (workshop_entries or store_workshop_entries) and len(merged_workshop_entries) >= min_workshop_count:
+            sources = []
+            if workshop_entries:
+                sources.append("SteamDB Workshop-capable apps")
+            if store_workshop_entries:
+                sources.append("Steam Store Workshop feature list")
+            sources.append("bundled seed")
+            self._write_appids_entries(
+                merged_workshop_entries,
+                source="workshop_capable_merged",
+                source_label=" + ".join(sources),
+            )
+            return {
+                "success": True,
+                "count": len(merged_workshop_entries),
+                "scraped_count": len(workshop_entries),
+                "store_count": len(store_workshop_entries),
+                "seed_count": len(bundled_entries),
+                "source": "workshop_capable_merged",
+                "source_label": " + ".join(sources),
+            }
+
+        if workshop_entries:
+            workshop_error = f"SteamDB returned an abnormal AppID count ({len(workshop_entries)})."
+
+        error = f"SteamDB Workshop-capable source failed ({workshop_error or 'no entries'})."
+        if store_error:
+            error = f"{error} Steam Store Workshop fallback also failed ({store_error})."
+        else:
+            error = f"{error} Steam Store Workshop fallback returned no entries."
+        error = f"{error} Full Steam app list fallback is disabled so the AppID cache stays Workshop-only."
+        return {"success": False, "error": error}
+
 
     def launch_documentation(self):
         webbrowser.open("https://github.com/dane-9/Streamline-Workshop-Downloader/wiki/Documentation")

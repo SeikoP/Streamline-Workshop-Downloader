@@ -528,8 +528,29 @@ ipcMain.handle("dialog:save-queue-file", async () => {
   return { success: true, path: result.filePath };
 });
 
+ipcMain.handle("dialog:open-update-folder", async () => {
+  if (!mainWindow) {
+    return { success: false, error: "Window is not ready." };
+  }
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openDirectory"]
+  });
+  if (result.canceled || !result.filePaths.length) {
+    return { success: false, cancelled: true };
+  }
+  return { success: true, path: result.filePaths[0] };
+});
+
 ipcMain.handle("shell:open-external", (_event, url) => {
   return shell.openExternal(String(url || ""));
+});
+
+ipcMain.handle("shell:open-path", async (_event, targetPath) => {
+  const error = await shell.openPath(String(targetPath || ""));
+  if (error) {
+    return { success: false, error };
+  }
+  return { success: true };
 });
 
 ipcMain.handle("workshop-browser:show", (_event, bounds) => {

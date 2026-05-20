@@ -213,6 +213,9 @@ class WebMainGuiApi:
     def open_downloads_folder(self, mod_id=None):
         return self.backend.open_downloads_folder(mod_id)
 
+    def get_downloads_folder_path(self, mod_id=None):
+        return self.backend.get_downloads_folder_path(mod_id)
+
     def get_preview_queue(self):
         return self.backend.get_preview_queue()
 
@@ -262,6 +265,52 @@ class WebMainGuiApi:
     def start_download(self):
         return self.backend.start_download()
 
+    def get_update_targets(self):
+        return self.backend.get_update_targets()
+
+    def save_update_target(self, app_id_or_game, mods_folder, replace_existing=False):
+        return self.backend.save_update_target(app_id_or_game, mods_folder, replace_existing)
+
+    def remove_update_target(self, target_id):
+        return self.backend.remove_update_target(target_id)
+
+    def scan_update_target(self, target_id):
+        return self.backend.scan_update_target(target_id)
+
+    def scan_update_targets(self):
+        return self.backend.scan_update_targets()
+
+    def add_update_mods_to_queue(self, target_id, mod_ids):
+        return self.backend.add_update_mods_to_queue(target_id, mod_ids)
+
+    def update_mods_now(self, target_id, mod_ids):
+        return self.backend.update_mods_now(target_id, mod_ids)
+
+    def apply_update_mods(self, target_id, mod_ids):
+        return self.backend.apply_update_mods(target_id, mod_ids)
+
+    def start_download_with_destination(self, destination_options):
+        return self.backend.start_download_with_destination(destination_options)
+
+    def choose_update_target_folder(self):
+        window = self._get_window()
+        if window is None:
+            return {"success": False, "error": "Window is not ready."}
+        try:
+            import webview
+            folder_dialog = getattr(webview.FileDialog, "FOLDER", None)
+            if folder_dialog is None:
+                folder_dialog = getattr(webview.FileDialog, "OPEN_FOLDER", None)
+            if folder_dialog is None:
+                return {"success": False, "error": "Folder dialog is not supported."}
+            selected = window.create_file_dialog(dialog_type=folder_dialog, allow_multiple=False)
+            folder_path = self._normalize_file_dialog_path(selected)
+            if not folder_path:
+                return {"success": False, "cancelled": True}
+            return {"success": True, "path": folder_path}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def cancel_download(self):
         return self.backend.cancel_download()
 
@@ -288,6 +337,9 @@ class WebMainGuiApi:
 
     def export_queue(self, file_path):
         return self.backend.export_queue(file_path)
+
+    def expose_update_mods(self, target_ids, file_path, provider="Default"):
+        return self.backend.expose_update_mods(target_ids, file_path, provider)
 
     def browse_import_queue_file(self):
         window = self._get_window()
@@ -738,11 +790,7 @@ class StartupSetupManager:
             )
 
     def _download_appids(self):
-        entries = self.scraper.scrape_steamdb(["Game"])
-        if not entries:
-            raise RuntimeError("SteamDB scraping returned zero AppIDs.")
-        with open(self.appids_path, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(entries))
+        raise RuntimeError("AppIDs updates are manual from the AppIDs manager.")
 
     def _seed_appids_from_bundle(self):
         bundled_appids_path = resource_path(os.path.join("Files", "AppIDs.txt"))
@@ -766,10 +814,7 @@ class StartupSetupManager:
             except Exception:
                 pass
         if os.path.isfile(self.appids_path):
-            try:
-                os.remove(self.appids_path)
-            except Exception:
-                pass
+            pass
 
     def _finish_canceled(self):
         self._cleanup_files()
@@ -815,8 +860,7 @@ class StartupSetupManager:
                 self._set_state(progress=70, status="Seeding bundled AppIDs database...")
                 seeded = self._seed_appids_from_bundle()
                 if not seeded:
-                    self._set_state(progress=70, status="Scraping SteamDB for AppIDs...")
-                    self._download_appids()
+                    self._set_state(progress=90, status="Bundled AppIDs seed unavailable; continuing with numeric AppID fallback.")
                 if self._cancel_event.is_set():
                     self._finish_canceled()
                     return
