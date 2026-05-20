@@ -903,10 +903,10 @@ def run_pywebview_main_gui():
 
     runtime_webui_index = runtime_path(os.path.join("Files", "webui", "index.html"))
     runtime_setup_index = runtime_path(os.path.join("Files", "webui", "setup.html"))
-    runtime_logo_icon = runtime_path(os.path.join("Files", "logo.png"))
+    runtime_logo_icon = runtime_path(os.path.join("Files", "logo.ico" if os.name == "nt" else "logo.png"))
     bundled_webui_index = resource_path(os.path.join("Files", "webui", "index.html"))
     bundled_setup_index = resource_path(os.path.join("Files", "webui", "setup.html"))
-    bundled_logo_icon = resource_path(os.path.join("Files", "logo.png"))
+    bundled_logo_icon = resource_path(os.path.join("Files", "logo.ico" if os.name == "nt" else "logo.png"))
 
     webui_index = runtime_webui_index if os.path.isfile(runtime_webui_index) else bundled_webui_index
     setup_index = runtime_setup_index if os.path.isfile(runtime_setup_index) else bundled_setup_index
