@@ -51,7 +51,7 @@ Do not commit `Files/config.json`, `Files/steamcmd/`, `Downloads/`, `node_module
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **Streamline-Workshop-Downloader** (2316 symbols, 5033 relationships, 209 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **Streamline-Workshop-Downloader** (2359 symbols, 5143 relationships, 213 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

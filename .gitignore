@@ -2,11 +2,16 @@
 Files/steamcmd
 Files/config.json
 Files/debug
+Files/cache/
 Files/logs
 Files/Logs/
 .idea/
 .claude/
+.agents/
+CLAUDE.md
 .gitnexus/
+docs/superpowers/
+Files/update_targets.json
 Downloads/
 __pycache__/
 *.py[cod]
